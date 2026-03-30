@@ -325,7 +325,7 @@ This means you made code changes to files that also have probes. Utopia stripped
 
 <div align="center">
 
-**Built by [Paul Vann](https://github.com/paulvann)**
+**Built by [Paul Vann](https://github.com/vaulpann)**
 
 *code that talks back*
 
