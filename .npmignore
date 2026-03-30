@@ -1,0 +1,14 @@
+# Don't publish these to npm
+.git/
+.github/
+.claude/
+.utopia/
+.vscode/
+.idea/
+*.db
+*.tgz
+CONTRIBUTING.md
+python/utopia_runtime/__pycache__/
+python/utopia_runtime.egg-info/
+python/build/
+python/dist/

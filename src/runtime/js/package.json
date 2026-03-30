@@ -1,0 +1,30 @@
+{
+  "name": "utopia-runtime",
+  "version": "0.1.0",
+  "description": "Zero-impact production probe runtime for Utopia — gives AI coding agents real-time visibility into how code runs",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["utopia", "probes", "observability", "production-context", "ai-agents"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paulvann/utopia"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

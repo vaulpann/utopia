@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.egg-info/
+python/utopia_runtime.egg-info/
+
+# Build output
+dist/
+src/runtime/js/dist/
+src/runtime/js/node_modules/
+python/dist/
+python/build/
+
+# Utopia local data
+.utopia/
+*.db
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# npm
+*.tgz
