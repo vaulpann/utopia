@@ -22,7 +22,7 @@
 
 ---
 
-Utopia embeds intelligent probes into your codebase that capture how your code *actually runs* — errors, API calls, data shapes, auth flows, security patterns — and feeds that context directly to your AI coding agent. No more copying logs. No more explaining what went wrong. The agent already knows.
+Utopia embeds intelligent probes into your codebase that capture how your code *actually runs*  - errors, API calls, data shapes, auth flows, security patterns  - and feeds that context directly to your AI coding agent. No more copying logs. No more explaining what went wrong. The agent already knows.
 
 <br />
 
@@ -37,7 +37,7 @@ utopia serve -b      →  Start the local data service
                      →  Writes better code because it sees production
 ```
 
-Utopia uses your AI agent (Claude Code or Codex) to analyze your codebase and decide where to place probes. The probes are contextual — they don't just log "API returned 200." They capture the response shape, what triggered the call, what data flowed through, and what decisions the code made at runtime.
+Utopia uses your AI agent (Claude Code or Codex) to analyze your codebase and decide where to place probes. The probes are contextual  - they don't just log "API returned 200." They capture the response shape, what triggered the call, what data flowed through, and what decisions the code made at runtime.
 
 When your agent works on the codebase next, it queries this data automatically before writing a single line of code.
 
@@ -68,7 +68,7 @@ You'll choose your AI agent, cloud provider, data capture depth, and probe focus
 utopia instrument
 ```
 
-Your AI agent analyzes the codebase and adds probes to high-value locations — API routes, auth flows, database calls, error boundaries, business logic. Takes 2-5 minutes depending on codebase size.
+Your AI agent analyzes the codebase and adds probes to high-value locations  - API routes, auth flows, database calls, error boundaries, business logic. Takes 2-5 minutes depending on codebase size.
 
 ### Run
 
@@ -81,7 +81,7 @@ Browse your app. Probes start capturing data immediately.
 
 ### See It Work
 
-Open your AI agent in the project. Ask it to fix a bug or build a feature. It will automatically query Utopia's MCP tools *before* writing code — pulling in real production context about errors, data patterns, and runtime behavior.
+Open your AI agent in the project. Ask it to fix a bug or build a feature. It will automatically query Utopia's MCP tools *before* writing code  - pulling in real production context about errors, data patterns, and runtime behavior.
 
 ```
 You: "Getting errors on the /api/users endpoint, can you fix it?"
@@ -156,24 +156,24 @@ utopia destruct --dry-run  # Preview what would be removed
 Utopia probes are not logs. They capture the context an AI agent needs to understand your code at runtime.
 
 ### Debugging Probes
-- **API calls** — method, URL, status, duration, request/response shapes
-- **Errors** — type, message, stack trace, *the exact input data that caused it*
-- **Function behavior** — arguments, return values, which code path was taken and why
-- **Database queries** — SQL patterns, timing, row counts, table access patterns
-- **Infrastructure** — cloud provider, region, memory usage, environment config
+- **API calls**  - method, URL, status, duration, request/response shapes
+- **Errors**  - type, message, stack trace, *the exact input data that caused it*
+- **Function behavior**  - arguments, return values, which code path was taken and why
+- **Database queries**  - SQL patterns, timing, row counts, table access patterns
+- **Infrastructure**  - cloud provider, region, memory usage, environment config
 
 ### Security Probes
-- **SQL injection detection** — captures whether queries use parameterized inputs
-- **Auth flow analysis** — token validation decisions, permission checks, role verification
-- **Input validation** — where user input enters the system, whether it's sanitized
-- **Insecure patterns** — HTTP calls, exposed error details, missing rate limiting, CORS config
+- **SQL injection detection**  - captures whether queries use parameterized inputs
+- **Auth flow analysis**  - token validation decisions, permission checks, role verification
+- **Input validation**  - where user input enters the system, whether it's sanitized
+- **Insecure patterns**  - HTTP calls, exposed error details, missing rate limiting, CORS config
 
 ### Data Modes
 
 | Mode | What's captured |
 |------|----------------|
-| **Schemas & shapes** | Counts, types, field names, distributions — no actual user data (GDPR/CCPA safe) |
-| **Full data context** | Real inputs, outputs, DB results — maximum visibility for debugging |
+| **Schemas & shapes** | Counts, types, field names, distributions  - no actual user data (GDPR/CCPA safe) |
+| **Full data context** | Real inputs, outputs, DB results  - maximum visibility for debugging |
 
 <br />
 
@@ -226,13 +226,13 @@ When you run `utopia init`, Utopia registers an MCP server with your AI agent. T
 |----------|--------------|
 | `get_recent_errors` | Errors with stack traces and the input data that caused them |
 | `get_production_context` | Context relevant to a specific task or file |
-| `get_full_context` | Complete production overview — use at the start of any task |
+| `get_full_context` | Complete production overview  - use at the start of any task |
 | `get_api_context` | External API call patterns, status codes, latencies |
 | `get_database_context` | Database query patterns, timing, data shapes |
 | `get_infrastructure_context` | Deployment environment, provider, region, config |
 | `get_impact_analysis` | What is affected by changing a specific file or function |
 
-The agent is instructed (via CLAUDE.md or AGENTS.md) to **always** check these tools before writing code. It's not optional context — it's how the agent understands your production environment.
+The agent is instructed (via CLAUDE.md or AGENTS.md) to **always** check these tools before writing code. It's not optional context  - it's how the agent understands your production environment.
 
 <br />
 
@@ -270,13 +270,13 @@ npm install -g @utopia-ai/cli
 Make sure your npm global bin is in your PATH. Check with `npm bin -g`.
 
 ### `utopia instrument` hangs with no output
-The AI agent is working — it reads files, plans the instrumentation, then writes probes. This takes 2-5 minutes. For Claude Code, you'll see streaming progress. For Codex, you'll see a spinner with elapsed time.
+The AI agent is working  - it reads files, plans the instrumentation, then writes probes. This takes 2-5 minutes. For Claude Code, you'll see streaming progress. For Codex, you'll see a spinner with elapsed time.
 
 ### `Module not found: utopia-runtime` (JavaScript/TypeScript)
-The runtime didn't install. Run `utopia instrument` again — it installs the runtime from npm (`utopia-runtime` package) automatically.
+The runtime didn't install. Run `utopia instrument` again  - it installs the runtime from npm (`utopia-runtime` package) automatically.
 
 ### `ModuleNotFoundError: No module named 'utopia_runtime'` (Python)
-The runtime didn't install into your virtualenv. Run `utopia instrument` again — it installs from PyPI (`utopia-runtime` package) automatically.
+The runtime didn't install into your virtualenv. Run `utopia instrument` again  - it installs from PyPI (`utopia-runtime` package) automatically.
 
 ### Pydantic `Extra inputs are not permitted` error (Python)
 Old Utopia env vars in your `.env` file are conflicting with Pydantic Settings. Utopia no longer writes env vars for Python projects (it reads from `.utopia/config.json` instead). Remove any `UTOPIA_ENDPOINT` or `UTOPIA_PROJECT_ID` lines from your `.env`.
