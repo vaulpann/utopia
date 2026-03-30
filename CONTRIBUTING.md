@@ -5,7 +5,7 @@ Thanks for your interest in contributing! Here's how to get started.
 ## Development Setup
 
 ```bash
-git clone https://github.com/paulvann/utopia.git
+git clone https://github.com/vaulpann/utopia.git
 cd utopia
 npm install
 npm link  # Makes `utopia` available globally from source
@@ -63,4 +63,4 @@ cd python && ./scripts/publish-pypi.sh
 
 ## Questions?
 
-Open an issue at https://github.com/paulvann/utopia/issues
+Open an issue at https://github.com/vaulpann/utopia/issues
