@@ -1,7 +1,7 @@
 {
   "name": "@utopia-ai/cli",
-  "version": "0.1.3",
-  "description": "Production-aware probes that give AI coding agents real-time context about how code runs in production",
+  "version": "0.2.0",
+  "description": "Production probes + self-healing functions — gives AI coding agents real-time context and auto-fixes errors at runtime",
   "type": "module",
   "bin": {
     "utopia": "bin/utopia.js"

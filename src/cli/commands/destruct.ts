@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { resolve } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
-import { configExists } from '../utils/config.js';
+import { configExists, loadConfig } from '../utils/config.js';
+import type { UtopiaConfig } from '../utils/config.js';
 
 const SNAPSHOT_DIR = '.utopia/snapshots';
 
@@ -136,8 +137,57 @@ function stripProbesFromContent(content: string, isPython: boolean): string {
   return result;
 }
 
+/**
+ * Strip @utopia decorators and utopia_runtime self-healing imports from Python content.
+ * Handles: @utopia, @utopia(), @utopia(ignore=[...]), multi-line decorator args.
+ */
+function stripHealFromContent(content: string): string {
+  let result = content;
+
+  // Remove @utopia decorators — bare, with empty parens, or with args (possibly multi-line)
+  // Single-line: @utopia, @utopia(), @utopia(ignore=[ValueError])
+  result = result.replace(/^\s*@utopia\b[^\n]*\n/gm, '');
+
+  // Remove "from utopia_runtime import utopia" style imports
+  // But preserve "import utopia_runtime" (used by probes) — only strip the "from ... import utopia" form
+  result = result.replace(/^\s*from\s+utopia_runtime\s+import\s+utopia\b[^\n]*\n/gm, '');
+  // Also handle legacy utopia_sdk imports if present
+  result = result.replace(/^\s*from\s+utopia_sdk\s+import\s+[^\n]+\n/gm, '');
+
+  // Clean up consecutive blank lines
+  result = result.replace(/\n{3,}/g, '\n\n');
+  result = result.replace(/[ \t]+$/gm, '');
+
+  return result;
+}
+
+/**
+ * Walk a directory and collect all .py files (for heal-mode stripping
+ * when no snapshots exist).
+ */
+function collectPythonFiles(dir: string, skipDirs: Set<string>): string[] {
+  const results: string[] = [];
+
+  function walk(d: string): void {
+    let entries: string[];
+    try { entries = readdirSync(d); } catch { return; }
+    for (const entry of entries) {
+      if (entry.startsWith('.') || skipDirs.has(entry)) continue;
+      const full = resolve(d, entry);
+      try {
+        const st = statSync(full);
+        if (st.isDirectory()) walk(full);
+        else if (st.isFile() && full.endsWith('.py')) results.push(full);
+      } catch { /* skip */ }
+    }
+  }
+
+  walk(dir);
+  return results;
+}
+
 export const destructCommand = new Command('destruct')
-  .description('Remove all Utopia probes from the codebase')
+  .description('Remove all Utopia probes and self-healing decorators from the codebase')
   .option('--dry-run', 'Show what would be restored without changing files', false)
   .action(async (options) => {
     const cwd = process.cwd();
@@ -147,20 +197,14 @@ export const destructCommand = new Command('destruct')
       process.exit(1);
     }
 
+    const config: UtopiaConfig = await loadConfig(cwd);
+    const mode = config.utopiaMode || 'instrument';
+    const hasProbes = mode === 'instrument' || mode === 'both';
+    const hasHeal = mode === 'heal' || mode === 'both';
+
     const snapshotBase = resolve(cwd, SNAPSHOT_DIR);
-
-    if (!existsSync(snapshotBase)) {
-      console.log(chalk.yellow('\n  No snapshots found. Nothing to restore.'));
-      console.log(chalk.dim('  Snapshots are created when you run "utopia instrument" or "utopia reinstrument".\n'));
-      return;
-    }
-
-    const snapshots = collectSnapshots(snapshotBase);
-
-    if (snapshots.length === 0) {
-      console.log(chalk.yellow('\n  No snapshots found. Nothing to restore.\n'));
-      return;
-    }
+    const hasSnapshots = existsSync(snapshotBase);
+    const snapshots = hasSnapshots ? collectSnapshots(snapshotBase) : [];
 
     console.log(chalk.bold.cyan('\n  Utopia Destruct\n'));
 
@@ -168,69 +212,147 @@ export const destructCommand = new Command('destruct')
       console.log(chalk.yellow('  Dry run — no files will be modified.\n'));
     }
 
-    console.log(chalk.dim(`  Found ${snapshots.length} file snapshot(s)\n`));
+    if (hasProbes) console.log(chalk.dim('  Mode: removing production probes'));
+    if (hasHeal) console.log(chalk.dim('  Mode: removing @utopia self-healing decorators'));
+    console.log('');
 
     let restored = 0;
     let merged = 0;
     let skipped = 0;
 
-    for (const { rel, snapPath } of snapshots) {
-      const targetPath = resolve(cwd, rel);
+    // --- Phase 1: Snapshot-based restoration (works for both probes and heal) ---
 
-      if (!existsSync(targetPath)) { skipped++; continue; }
+    if (snapshots.length > 0) {
+      console.log(chalk.dim(`  Found ${snapshots.length} file snapshot(s)\n`));
 
-      const snapshot = readFileSync(snapPath, 'utf-8');
-      const current = readFileSync(targetPath, 'utf-8');
+      for (const { rel, snapPath } of snapshots) {
+        const targetPath = resolve(cwd, rel);
 
-      if (current === snapshot) { skipped++; continue; }
+        if (!existsSync(targetPath)) { skipped++; continue; }
 
-      // Check if the file has user changes beyond probes
-      const isPython = rel.endsWith('.py');
-      const strippedCurrent = stripProbesFromContent(current, isPython);
+        const snapshot = readFileSync(snapPath, 'utf-8');
+        const current = readFileSync(targetPath, 'utf-8');
 
-      // Normalize whitespace for comparison — Claude Code may reformat slightly
-      const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+        if (current === snapshot) { skipped++; continue; }
 
-      // If stripped current matches snapshot (ignoring whitespace), no user changes — restore exactly
-      if (normalize(strippedCurrent) === normalize(snapshot)) {
-        if (options.dryRun) {
-          console.log(chalk.dim(`  [dry-run] Restore: ${rel}`));
-        } else {
-          writeFileSync(targetPath, snapshot);
-          console.log(chalk.green(`  Restored: ${rel}`));
+        const isPython = rel.endsWith('.py');
+        let strippedCurrent = current;
+
+        // Strip probes if in instrument/both mode
+        if (hasProbes) {
+          strippedCurrent = stripProbesFromContent(strippedCurrent, isPython);
         }
-        restored++;
-      } else {
-        // File has user changes + probes — strip probes, keep user changes
-        if (options.dryRun) {
-          console.log(chalk.dim(`  [dry-run] Strip probes (user changes preserved): ${rel}`));
-        } else {
-          writeFileSync(targetPath, strippedCurrent);
-          console.log(chalk.yellow(`  Stripped probes (user changes preserved): ${rel}`));
+
+        // Strip @utopia decorators if in heal/both mode and file is Python
+        if (hasHeal && isPython) {
+          strippedCurrent = stripHealFromContent(strippedCurrent);
         }
-        merged++;
+
+        const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+
+        if (normalize(strippedCurrent) === normalize(snapshot)) {
+          if (options.dryRun) {
+            console.log(chalk.dim(`  [dry-run] Restore: ${rel}`));
+          } else {
+            writeFileSync(targetPath, snapshot);
+            console.log(chalk.green(`  Restored: ${rel}`));
+          }
+          restored++;
+        } else {
+          if (options.dryRun) {
+            console.log(chalk.dim(`  [dry-run] Strip (user changes preserved): ${rel}`));
+          } else {
+            writeFileSync(targetPath, strippedCurrent);
+            console.log(chalk.yellow(`  Stripped (user changes preserved): ${rel}`));
+          }
+          merged++;
+        }
       }
+    }
+
+    // --- Phase 2: Heal-only cleanup for files without snapshots ---
+    // This handles the case where @utopia decorators were added to files
+    // that weren't captured in snapshots (e.g. new files created after heal)
+
+    if (hasHeal) {
+      const skipDirs = new Set(['node_modules', '.next', 'dist', 'build', '.utopia', '.git', '__pycache__', 'venv', '.venv', 'coverage', '.env', 'env']);
+      const snapshotRels = new Set(snapshots.map(s => s.rel));
+      const pyFiles = collectPythonFiles(cwd, skipDirs);
+      let healStripped = 0;
+
+      for (const pyFile of pyFiles) {
+        const rel = pyFile.substring(cwd.length + 1);
+        if (snapshotRels.has(rel)) continue; // already handled above
+
+        const content = readFileSync(pyFile, 'utf-8');
+        if (!content.includes('@utopia') && !content.includes('from utopia_runtime import utopia') && !content.includes('from utopia_sdk')) continue;
+
+        const stripped = stripHealFromContent(content);
+        if (stripped !== content) {
+          if (options.dryRun) {
+            console.log(chalk.dim(`  [dry-run] Strip @utopia: ${rel}`));
+          } else {
+            writeFileSync(pyFile, stripped);
+            console.log(chalk.yellow(`  Stripped @utopia: ${rel}`));
+          }
+          healStripped++;
+        }
+      }
+
+      if (healStripped > 0) merged += healStripped;
     }
 
     console.log('');
     if (options.dryRun) {
       console.log(chalk.yellow(`  Would restore ${restored}, strip ${merged}, skip ${skipped} file(s).\n`));
     } else {
-      try {
-        rmSync(snapshotBase, { recursive: true, force: true });
-      } catch { /* ignore */ }
-
-      // Clean up copied Python runtime if it exists
-      const pythonRuntimeDir = resolve(cwd, 'utopia_runtime');
-      if (existsSync(pythonRuntimeDir)) {
+      // Clean up snapshots
+      if (hasSnapshots) {
         try {
-          rmSync(pythonRuntimeDir, { recursive: true, force: true });
-          console.log(chalk.dim('  Removed utopia_runtime/ directory.'));
+          rmSync(snapshotBase, { recursive: true, force: true });
         } catch { /* ignore */ }
       }
 
-      if (restored > 0) console.log(chalk.bold.green(`  ${restored} file(s) restored to exact pre-instrument state.`));
-      if (merged > 0) console.log(chalk.yellow(`  ${merged} file(s) had user changes — probes stripped, your changes preserved.`));
+      // Clean up copied Python runtime if it exists
+      if (hasProbes) {
+        const pythonRuntimeDir = resolve(cwd, 'utopia_runtime');
+        if (existsSync(pythonRuntimeDir)) {
+          try {
+            rmSync(pythonRuntimeDir, { recursive: true, force: true });
+            console.log(chalk.dim('  Removed utopia_runtime/ directory.'));
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Clean up self-healing artifacts
+      if (hasHeal) {
+        const fixesDir = resolve(cwd, '.utopia', 'fixes');
+        if (existsSync(fixesDir)) {
+          if (options.dryRun) {
+            console.log(chalk.dim('  [dry-run] Would remove .utopia/fixes/'));
+          } else {
+            try {
+              rmSync(fixesDir, { recursive: true, force: true });
+              console.log(chalk.dim('  Removed .utopia/fixes/ directory.'));
+            } catch { /* ignore */ }
+          }
+        }
+
+        const fixesMd = resolve(cwd, '.utopia', 'FIXES.md');
+        if (existsSync(fixesMd)) {
+          if (options.dryRun) {
+            console.log(chalk.dim('  [dry-run] Would remove .utopia/FIXES.md'));
+          } else {
+            try {
+              rmSync(fixesMd, { force: true });
+              console.log(chalk.dim('  Removed .utopia/FIXES.md'));
+            } catch { /* ignore */ }
+          }
+        }
+      }
+
+      if (restored > 0) console.log(chalk.bold.green(`\n  ${restored} file(s) restored to exact pre-instrument state.`));
+      if (merged > 0) console.log(chalk.yellow(`  ${merged} file(s) had user changes — probes/decorators stripped, your changes preserved.`));
       if (skipped > 0) console.log(chalk.dim(`  ${skipped} file(s) unchanged.`));
       console.log('');
     }
