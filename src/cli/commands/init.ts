@@ -2,13 +2,13 @@ import { Command } from 'commander';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import crypto from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { saveConfig, configExists } from '../utils/config.js';
-import type { UtopiaConfig, SupportedFramework, AgentType } from '../utils/config.js';
+import type { UtopiaConfig, SupportedFramework, AgentType, UtopiaMode } from '../utils/config.js';
 
 function detectLanguages(dir: string): string[] {
   const languages: Set<string> = new Set();
@@ -46,6 +46,16 @@ function detectLanguages(dir: string): string[] {
     }
   }
 
+  // Fallback: scan for .py files if no config-file-based detection worked for Python
+  if (!languages.has('python')) {
+    try {
+      const entries = readdirSync(dir);
+      if (entries.some(e => e.endsWith('.py'))) {
+        languages.add('python');
+      }
+    } catch { /* ignore */ }
+  }
+
   if (languages.size === 0) {
     languages.add('javascript');
   }
@@ -79,6 +89,14 @@ async function detectFramework(dir: string): Promise<string> {
       return 'python';
     }
   }
+
+  // Fallback: check for any .py files in the directory
+  try {
+    const entries = readdirSync(dir);
+    if (entries.some(e => e.endsWith('.py'))) {
+      return 'python';
+    }
+  } catch { /* ignore */ }
 
   return 'unsupported';
 }
@@ -194,77 +212,163 @@ function setupMcpServer(cwd: string, config: UtopiaConfig): void {
 
 /**
  * Create/update the agent instructions file (CLAUDE.md or AGENTS.md)
- * with Utopia context so the agent knows about the probe system.
+ * with Utopia context so the agent knows about the available systems.
+ * Content is generated based on utopiaMode (instrument, heal, or both).
  */
 function setupAgentInstructions(cwd: string, config: UtopiaConfig): void {
   const fileName = config.agent === 'codex' ? 'AGENTS.md' : 'CLAUDE.md';
   const claudeMdPath = resolve(cwd, fileName);
 
-  const utopiaSection = `
-## Utopia — Production Probe System
+  const mode = config.utopiaMode || 'instrument'; // backwards compat for old configs
+  const hasProbes = mode === 'instrument' || mode === 'both';
+  const hasHeal = mode === 'heal' || mode === 'both';
 
-This project has Utopia installed. It captures real-time production data via probes embedded in the code. You have MCP tools to query this data. **USE THEM.**
+  // Build the title based on mode
+  let title: string;
+  if (mode === 'both') title = 'Production Probes + Self-Healing';
+  else if (mode === 'heal') title = 'Self-Healing Functions';
+  else title = 'Production Probe System';
 
-### MANDATORY: Check Utopia FIRST
+  const sections: string[] = [];
 
-When the user asks you to investigate errors, fix bugs, build features, or modify code — your FIRST action must be to call the Utopia MCP tools. Do NOT run the app, read logs, or guess. The probe data already has what you need.
+  sections.push(`## Utopia — ${title}`);
+  sections.push('');
 
-**When the user reports errors or bugs:**
-1. Call \`get_recent_errors\` — this has the exact errors, stack traces, and the input data that caused them
-2. Call \`get_production_context\` with a description of the issue
-3. THEN fix the code based on what the probes tell you
+  if (hasProbes && hasHeal) {
+    sections.push('This project has Utopia installed with **two capabilities**:');
+    sections.push('1. **Production probes** — real-time observability data captured from running code');
+    sections.push('2. **Self-healing functions** — `@utopia` decorated functions that auto-fix errors at runtime via AI');
+    sections.push('');
+    sections.push('You have MCP tools to query both. **USE THEM.**');
+  } else if (hasHeal) {
+    sections.push('This project has Utopia self-healing installed. Functions decorated with `@utopia` automatically catch errors, generate AI-powered fixes at runtime, and log the fixes for you to apply permanently.');
+    sections.push('');
+    sections.push('You have MCP tools to query pending fixes. **USE THEM.**');
+  } else {
+    sections.push('This project has Utopia installed. It captures real-time production data via probes embedded in the code. You have MCP tools to query this data. **USE THEM.**');
+  }
+  sections.push('');
 
-**When starting any task:**
-1. Call \`get_full_context\` — comprehensive overview of production state
-2. Call \`get_production_context\` with your task description
-3. THEN start working
+  // --- MANDATORY section ---
+  sections.push('### MANDATORY: Check Utopia FIRST');
+  sections.push('');
+  sections.push('When the user asks you to investigate errors, fix bugs, build features, or modify code — your FIRST action must be to call the Utopia MCP tools. Do NOT run the app, read logs, or guess.');
+  sections.push('');
 
-**Before modifying any file:**
-- Call \`get_production_context\` with the file/function name
-- Call \`get_impact_analysis\` to see what depends on it
+  // Self-healing first-check (only if heal mode)
+  if (hasHeal) {
+    sections.push('**FIRST — check for self-healing fixes:**');
+    sections.push('1. Call `get_pending_fixes` — if there are pending fixes, they were already debugged and solved at runtime');
+    sections.push('2. For each pending fix: open the source file, replace the original code with the fixed code');
+    sections.push('3. Call `mark_fix_applied` for each fix you apply');
+    sections.push('4. These fixes are pre-solved bugs — apply them before doing anything else');
+    sections.push('');
+  }
 
-**Do NOT:**
-- Run the dev server just to see errors (the probes already captured them)
-- Guess at runtime behavior (the probes show you exactly what happens)
-- Skip checking probes because it seems faster (it's not — you'll miss context)
+  // Error/bug workflow
+  sections.push('**When the user reports errors or bugs:**');
+  const bugSteps: string[] = [];
+  if (hasHeal) bugSteps.push('Call `get_pending_fixes` — the bug may already be solved by self-healing');
+  if (hasProbes) bugSteps.push('Call `get_recent_errors` — this has the exact errors, stack traces, and the input data that caused them');
+  if (hasProbes) bugSteps.push('Call `get_production_context` with a description of the issue');
+  bugSteps.push('THEN fix the code based on what you found');
+  bugSteps.forEach((step, i) => sections.push(`${i + 1}. ${step}`));
+  sections.push('');
 
-### MCP Tools
+  // Starting any task (only if probes)
+  if (hasProbes) {
+    sections.push('**When starting any task:**');
+    sections.push('1. Call `get_full_context` — comprehensive overview of production state');
+    sections.push('2. Call `get_production_context` with your task description');
+    sections.push('3. THEN start working');
+    sections.push('');
 
-- \`get_recent_errors\` — Errors with stack traces and input data that caused them
-- \`get_production_context\` — Context relevant to a specific task or file
-- \`get_full_context\` — Complete production overview (use at task start)
-- \`get_api_context\` — External API call patterns and latencies
-- \`get_database_context\` — Database query patterns and data shapes
-- \`get_infrastructure_context\` — Deployment environment details
-- \`get_impact_analysis\` — What is affected by changing a file or function
+    sections.push('**Before modifying any file:**');
+    sections.push('- Call `get_production_context` with the file/function name');
+    sections.push('- Call `get_impact_analysis` to see what depends on it');
+    sections.push('');
+  }
 
-### Adding probes — ALWAYS use utopia reinstrument
+  // Do NOT section
+  sections.push('**Do NOT:**');
+  if (hasProbes) {
+    sections.push('- Run the dev server just to see errors (the probes already captured them)');
+    sections.push('- Guess at runtime behavior (the probes show you exactly what happens)');
+    sections.push('- Skip checking probes because it seems faster (it\'s not — you\'ll miss context)');
+  }
+  if (hasHeal) {
+    sections.push('- Manually debug an error that self-healing already fixed — check `get_pending_fixes` first');
+  }
+  sections.push('');
 
-**NEVER write probe code manually.** Always use the \`utopia reinstrument\` command to add new probes. This ensures probes are correctly formatted, tracked for clean removal, and follow all Utopia conventions.
+  // --- MCP Tools section ---
+  sections.push('### MCP Tools');
+  sections.push('');
+  if (hasHeal) {
+    sections.push('- `get_pending_fixes` — **CHECK FIRST** — Self-healing fixes auto-generated at runtime. Apply these before anything else.');
+    sections.push('- `mark_fix_applied` — Mark a fix as permanently applied after you edit the source code');
+  }
+  if (hasProbes) {
+    sections.push('- `get_recent_errors` — Errors with stack traces and input data that caused them');
+    sections.push('- `get_production_context` — Context relevant to a specific task or file');
+    sections.push('- `get_full_context` — Complete production overview (use at task start)');
+    sections.push('- `get_api_context` — External API call patterns and latencies');
+    sections.push('- `get_database_context` — Database query patterns and data shapes');
+    sections.push('- `get_infrastructure_context` — Deployment environment details');
+    sections.push('- `get_impact_analysis` — What is affected by changing a file or function');
+  }
+  sections.push('');
 
-\`\`\`bash
-utopia reinstrument -p "description of what you need deeper insight into"
-\`\`\`
+  // --- Probes management (only if instrument mode) ---
+  if (hasProbes) {
+    sections.push('### Adding probes — ALWAYS use utopia reinstrument');
+    sections.push('');
+    sections.push('**NEVER write probe code manually.** Always use the `utopia reinstrument` command to add new probes. This ensures probes are correctly formatted, tracked for clean removal, and follow all Utopia conventions.');
+    sections.push('');
+    sections.push('```bash');
+    sections.push('utopia reinstrument -p "description of what you need deeper insight into"');
+    sections.push('```');
+    sections.push('');
+    sections.push('Run this when:');
+    sections.push('- You\'re debugging an issue but the probes don\'t cover that code path');
+    sections.push('- You\'re about to refactor a module and want to understand its runtime behavior first');
+    sections.push('- The user asks about a feature that doesn\'t have probes yet');
+    sections.push('- You need to understand data shapes flowing through specific functions');
+    sections.push('');
+    sections.push('After reinstrumenting, the user needs to restart their app and trigger the code paths. Then query the MCP tools again for the new data.');
+    sections.push('');
+    sections.push('**Do NOT:**');
+    sections.push('- Write `// utopia:probe` blocks yourself');
+    sections.push('- Copy probe code from other files');
+    sections.push('- Import utopia-runtime and add report calls manually');
+    sections.push('These will not be tracked properly and may break `utopia destruct`.');
+    sections.push('');
+    sections.push('### Removing probes');
+    sections.push('```bash');
+    sections.push('utopia destruct');
+    sections.push('```');
+  }
 
-Run this when:
-- You're debugging an issue but the probes don't cover that code path
-- You're about to refactor a module and want to understand its runtime behavior first
-- The user asks about a feature that doesn't have probes yet
-- You need to understand data shapes flowing through specific functions
+  // --- Self-healing management (only if heal mode) ---
+  if (hasHeal) {
+    sections.push('### Self-healing workflow');
+    sections.push('');
+    sections.push('Functions decorated with `@utopia` automatically catch errors at runtime, send them to OpenAI for debugging, hot-patch the fix, and log everything to `.utopia/fixes/`.');
+    sections.push('');
+    sections.push('**Your job:** When you start a session, call `get_pending_fixes`. If there are fixes:');
+    sections.push('1. Read each fix — it shows the file, original code, fixed code, and explanation');
+    sections.push('2. Open the source file and replace the original code with the fixed code (the fixed code already includes `@utopia` decorators — do a straight replacement)');
+    sections.push('3. Call `mark_fix_applied` to mark it done');
+    sections.push('');
+    sections.push('**Adding self-healing to more functions:**');
+    sections.push('```bash');
+    sections.push('utopia heal');
+    sections.push('```');
+    sections.push('This will analyze the codebase and add `@utopia` decorators to functions that should self-heal.');
+  }
 
-After reinstrumenting, the user needs to restart their app and trigger the code paths. Then query the MCP tools again for the new data.
 
-**Do NOT:**
-- Write \`// utopia:probe\` blocks yourself
-- Copy probe code from other files
-- Import utopia-runtime and add report calls manually
-These will not be tracked properly and may break \`utopia destruct\`.
-
-### Removing probes
-\`\`\`bash
-utopia destruct
-\`\`\`
-`.trim();
+  const utopiaSection = sections.join('\n').trim();
 
   // Check if CLAUDE.md exists and already has utopia section
   let existing = '';
@@ -273,8 +377,8 @@ utopia destruct
   } catch { /* doesn't exist */ }
 
   if (existing.includes('## Utopia')) {
-    // Replace existing section
-    const regex = /## Utopia — Production Probe System[\s\S]*?(?=\n## |\n*$)/;
+    // Replace existing section (matches any Utopia title variant)
+    const regex = /## Utopia — [^\n]+[\s\S]*?(?=\n## |\n*$)/;
     if (regex.test(existing)) {
       const updated = existing.replace(regex, utopiaSection);
       writeFileSync(claudeMdPath, updated);
@@ -401,32 +505,71 @@ export const initCommand = new Command('init')
       },
     ]);
 
-    // Data collection depth
-    const { dataMode } = await inquirer.prompt<{ dataMode: string }>([
-      {
-        type: 'list',
-        name: 'dataMode',
-        message: 'What level of data should probes capture?',
-        choices: [
-          { name: 'Schemas & shapes only (counts, types, field names — no actual user data)', value: 'schemas' },
-          { name: 'Full data context (real inputs, outputs, DB results — maximum visibility)', value: 'full' },
-        ],
-      },
-    ]);
+    // Utopia mode — what capabilities to enable
+    const isPython = detectedFramework === 'python';
+    const modeChoices = isPython
+      ? [
+          { name: 'Production probes (observability — see how code runs in production)', value: 'instrument' },
+          { name: 'Self-healing functions (auto-fix errors at runtime via AI)', value: 'heal' },
+          { name: 'Both — probes + self-healing', value: 'both' },
+        ]
+      : [
+          { name: 'Production probes (observability — see how code runs in production)', value: 'instrument' },
+        ];
 
-    // Probe goal
-    const { probeGoal } = await inquirer.prompt<{ probeGoal: string }>([
-      {
-        type: 'list',
-        name: 'probeGoal',
-        message: 'What are you looking to solve?',
-        choices: [
-          { name: 'Debugging — runtime behavior, errors, data flow, performance', value: 'debugging' },
-          { name: 'Security — SQL injection, auth flaws, insecure patterns, bad domains', value: 'security' },
-          { name: 'Both — full debugging + security analysis', value: 'both' },
-        ],
-      },
-    ]);
+    let utopiaMode: string;
+    if (modeChoices.length === 1) {
+      utopiaMode = 'instrument';
+      console.log(chalk.dim('  Mode: Production probes (self-healing is Python-only for now)\n'));
+    } else {
+      const modeAnswer = await inquirer.prompt<{ utopiaMode: string }>([
+        {
+          type: 'list',
+          name: 'utopiaMode',
+          message: 'What capabilities do you want?',
+          choices: modeChoices,
+        },
+      ]);
+      utopiaMode = modeAnswer.utopiaMode;
+    }
+
+    const wantsProbes = utopiaMode === 'instrument' || utopiaMode === 'both';
+    const wantsHeal = utopiaMode === 'heal' || utopiaMode === 'both';
+
+    // Data collection depth (only relevant for probes)
+    let dataMode = 'schemas';
+    if (wantsProbes) {
+      const dataModeAnswer = await inquirer.prompt<{ dataMode: string }>([
+        {
+          type: 'list',
+          name: 'dataMode',
+          message: 'What level of data should probes capture?',
+          choices: [
+            { name: 'Schemas & shapes only (counts, types, field names — no actual user data)', value: 'schemas' },
+            { name: 'Full data context (real inputs, outputs, DB results — maximum visibility)', value: 'full' },
+          ],
+        },
+      ]);
+      dataMode = dataModeAnswer.dataMode;
+    }
+
+    // Probe goal (only relevant for probes)
+    let probeGoal = 'debugging';
+    if (wantsProbes) {
+      const probeGoalAnswer = await inquirer.prompt<{ probeGoal: string }>([
+        {
+          type: 'list',
+          name: 'probeGoal',
+          message: 'What are you looking to solve?',
+          choices: [
+            { name: 'Debugging — runtime behavior, errors, data flow, performance', value: 'debugging' },
+            { name: 'Security — SQL injection, auth flaws, insecure patterns, bad domains', value: 'security' },
+            { name: 'Both — full debugging + security analysis', value: 'both' },
+          ],
+        },
+      ]);
+      probeGoal = probeGoalAnswer.probeGoal;
+    }
 
     const dataEndpoint = 'http://localhost:7890';
     const projectId = `proj_${crypto.randomBytes(8).toString('hex')}`;
@@ -444,6 +587,7 @@ export const initCommand = new Command('init')
       dataMode: dataMode as UtopiaConfig['dataMode'],
       probeGoal: probeGoal as UtopiaConfig['probeGoal'],
       agent: agent as AgentType,
+      utopiaMode: utopiaMode as UtopiaMode,
     };
 
     await saveConfig(config, cwd);
@@ -485,21 +629,42 @@ export const initCommand = new Command('init')
     console.log(chalk.white('  Configuration saved to .utopia/config.json'));
     console.log(chalk.dim('  (.utopia/ is gitignored by default)\n'));
 
+    const modeLabel = utopiaMode === 'both' ? 'Probes + Self-Healing'
+      : utopiaMode === 'heal' ? 'Self-Healing' : 'Production Probes';
+
     console.log(chalk.bold('  Project Summary:'));
     console.log(`    Project ID:   ${chalk.cyan(projectId)}`);
+    console.log(`    Mode:         ${chalk.cyan(modeLabel)}`);
     console.log(`    Provider:     ${chalk.cyan(cloudProvider)}`);
     console.log(`    Deploy via:   ${chalk.cyan(deploymentMethod)}`);
     console.log(`    Languages:    ${chalk.cyan(detectedLanguages.join(', '))}`);
     console.log(`    Framework:    ${chalk.cyan(detectedFramework)}`);
     console.log(`    Agent:        ${chalk.cyan(agent === 'codex' ? 'Codex (OpenAI)' : 'Claude Code')}`);
-    console.log(`    Data mode:    ${chalk.cyan(dataMode === 'full' ? 'Full data context' : 'Schemas & shapes only')}`);
-    console.log(`    Probe goal:   ${chalk.cyan(probeGoal === 'both' ? 'Debugging + Security' : probeGoal.charAt(0).toUpperCase() + probeGoal.slice(1))}`);
+    if (wantsProbes) {
+      console.log(`    Data mode:    ${chalk.cyan(dataMode === 'full' ? 'Full data context' : 'Schemas & shapes only')}`);
+      console.log(`    Probe goal:   ${chalk.cyan(probeGoal === 'both' ? 'Debugging + Security' : probeGoal.charAt(0).toUpperCase() + probeGoal.slice(1))}`);
+    }
 
     console.log(chalk.bold('\n  Next Steps:\n'));
-    console.log(`    1. ${chalk.white('utopia instrument')}   — Add probes to your codebase`);
-    console.log(`    2. ${chalk.white('utopia validate')}     — Verify probes are valid`);
-    console.log(`    3. ${chalk.white('utopia serve -b')}     — Start the data service`);
-    console.log(`    4. Run your app and browse around`);
-    console.log(`    5. ${chalk.white('utopia status')}       — See probe data flowing`);
+    let step = 1;
+    if (wantsProbes) {
+      console.log(`    ${step}. ${chalk.white('utopia instrument')}   — Add production probes to your codebase`);
+      step++;
+      console.log(`    ${step}. ${chalk.white('utopia validate')}     — Verify probes are valid`);
+      step++;
+      console.log(`    ${step}. ${chalk.white('utopia serve -b')}     — Start the data service`);
+      step++;
+    }
+    if (wantsHeal) {
+      console.log(`    ${step}. ${chalk.white('utopia heal')}         — Add self-healing @utopia decorators`);
+      step++;
+      console.log(`    ${step}. ${chalk.white('export OPENAI_API_KEY="sk-..."')}  — Set your OpenAI key for runtime healing`);
+      step++;
+    }
+    console.log(`    ${step}. Run your app and browse around`);
+    step++;
+    if (wantsProbes) {
+      console.log(`    ${step}. ${chalk.white('utopia status')}       — See probe data flowing`);
+    }
     console.log('');
   });

@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "utopia-runtime"
-version = "0.1.0"
-description = "Zero-impact production probe runtime for Utopia — gives AI coding agents real-time visibility into how code runs"
+version = "0.2.0"
+description = "Production probes + self-healing functions for Utopia — gives AI coding agents real-time visibility and auto-fixes errors at runtime"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
-keywords = ["utopia", "probes", "observability", "production-context", "ai-agents"]
+keywords = ["utopia", "probes", "observability", "production-context", "ai-agents", "self-healing", "decorator", "openai"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -25,8 +25,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/paulvann/utopia"
-Repository = "https://github.com/paulvann/utopia"
+Homepage = "https://github.com/vaulpann/utopia"
+Repository = "https://github.com/vaulpann/utopia"
 
 [tool.setuptools.packages.find]
 include = ["utopia_runtime*"]

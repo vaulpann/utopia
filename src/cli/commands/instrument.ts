@@ -693,6 +693,7 @@ function spawnAgentSession(cwd: string, prompt: string, agent: string): Promise<
       child = spawn('codex', [
         'exec', readFileSync(tmpPromptFile, 'utf-8'),
         '--full-auto',
+        '--skip-git-repo-check',
       ], {
         cwd,
         stdio: ['ignore', 'inherit', 'pipe'],

@@ -1,6 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { readFileSync, readdirSync, existsSync, writeFileSync, unlinkSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -871,6 +873,239 @@ server.tool(
     const text = sections.join('\n');
 
     return { content: [{ type: 'text' as const, text }] };
+  },
+);
+
+// ---- Tool 8: get_pending_fixes ----
+
+interface FixRecord {
+  id: string;
+  timestamp: string;
+  function_name: string;
+  source_file: string;
+  error: {
+    type: string;
+    message: string;
+    traceback: string;
+  };
+  original_code: string;
+  fixed_code: string;
+  explanation: string;
+  hot_patch_success: boolean;
+  patch_error: string | null;
+  status: string;
+}
+
+function findFixesDir(): string | null {
+  // Walk up from cwd to find .utopia/fixes/
+  let dir = process.cwd();
+  for (let i = 0; i < 10; i++) {
+    const fixesDir = resolve(dir, '.utopia', 'fixes');
+    if (existsSync(fixesDir)) return fixesDir;
+    const parent = resolve(dir, '..');
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+function loadFixes(fixesDir: string): FixRecord[] {
+  const fixes: FixRecord[] = [];
+  try {
+    const files = readdirSync(fixesDir).filter(f => f.endsWith('.json'));
+    for (const file of files) {
+      try {
+        const content = readFileSync(resolve(fixesDir, file), 'utf-8');
+        fixes.push(JSON.parse(content));
+      } catch { /* skip malformed */ }
+    }
+  } catch { /* dir unreadable */ }
+  // Sort newest first
+  fixes.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  return fixes;
+}
+
+function formatFixes(fixes: FixRecord[], status?: string): string {
+  const filtered = status ? fixes.filter(f => f.status === status) : fixes;
+
+  if (filtered.length === 0) {
+    if (status === 'pending_review') {
+      return 'No pending fixes. All self-healing fixes have been applied (or no errors have been caught yet).';
+    }
+    return 'No fixes found.';
+  }
+
+  const lines: string[] = [];
+  lines.push(`Found ${filtered.length} fix(es)${status ? ` with status "${status}"` : ''}:`);
+  lines.push('');
+
+  for (const fix of filtered) {
+    lines.push(`--- ${fix.function_name} ---`);
+    lines.push(`  File: ${fix.source_file}`);
+    lines.push(`  Error: ${fix.error.type}: ${fix.error.message}`);
+    lines.push(`  Explanation: ${fix.explanation}`);
+    lines.push(`  Hot-patched at runtime: ${fix.hot_patch_success ? 'yes' : 'no'}`);
+    if (fix.patch_error) {
+      lines.push(`  Patch error: ${fix.patch_error}`);
+    }
+    lines.push(`  When: ${formatTimestamp(fix.timestamp)}`);
+    lines.push(`  Status: ${fix.status}`);
+    lines.push('');
+    lines.push('  ORIGINAL CODE:');
+    lines.push('  ```python');
+    for (const codeLine of fix.original_code.split('\n')) {
+      lines.push(`  ${codeLine}`);
+    }
+    lines.push('  ```');
+    lines.push('');
+    lines.push('  FIXED CODE (apply this):');
+    lines.push('  ```python');
+    for (const codeLine of fix.fixed_code.split('\n')) {
+      lines.push(`  ${codeLine}`);
+    }
+    lines.push('  ```');
+    lines.push('');
+  }
+
+  if (status === 'pending_review') {
+    lines.push('ACTION REQUIRED: Replace the original code with the fixed code in each file listed above.');
+    lines.push('After applying a fix, call `mark_fix_applied` with the function name to mark it as done.');
+  }
+
+  return lines.join('\n');
+}
+
+server.tool(
+  'get_pending_fixes',
+  'Get self-healing fixes that were auto-generated at runtime by the @utopia decorator. These are bugs that were caught, debugged by AI, and fixed at runtime. The fixes need to be permanently applied to the source code. CHECK THIS FIRST when starting a session — if there are pending fixes, apply them before doing anything else.',
+  {
+    status: z.enum(['pending_review', 'applied', 'all']).optional().default('pending_review')
+      .describe('Filter by fix status. Default: pending_review (fixes that need to be applied)'),
+    function_name: z.string().optional()
+      .describe('Filter by function name'),
+  },
+  async ({ status, function_name }) => {
+    const fixesDir = findFixesDir();
+    if (!fixesDir) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'No .utopia/fixes/ directory found. Self-healing has not generated any fixes yet (or @utopia decorators have not been added — run `utopia heal` first).',
+        }],
+      };
+    }
+
+    let fixes = loadFixes(fixesDir);
+
+    if (function_name) {
+      fixes = fixes.filter(f =>
+        f.function_name.toLowerCase().includes(function_name.toLowerCase())
+      );
+    }
+
+    const filterStatus = status === 'all' ? undefined : status;
+    const text = formatFixes(fixes, filterStatus);
+
+    return { content: [{ type: 'text' as const, text }] };
+  },
+);
+
+// ---- Tool 9: mark_fix_applied ----
+
+server.tool(
+  'mark_fix_applied',
+  'Mark a self-healing fix as permanently applied to the source code. Call this AFTER you have edited the source file to replace the original code with the fixed code. This updates the fix status and cleans up the FIXES.md summary.',
+  {
+    function_name: z.string().describe('The function name of the fix to mark as applied'),
+  },
+  async ({ function_name }) => {
+    const fixesDir = findFixesDir();
+    if (!fixesDir) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'No .utopia/fixes/ directory found.',
+        }],
+      };
+    }
+
+    const fixes = loadFixes(fixesDir);
+    const matching = fixes.filter(
+      f => f.function_name === function_name && f.status === 'pending_review'
+    );
+
+    if (matching.length === 0) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `No pending fix found for function "${function_name}". It may have already been applied.`,
+        }],
+      };
+    }
+
+    let marked = 0;
+    for (const fix of matching) {
+      try {
+        fix.status = 'applied';
+        const fixPath = resolve(fixesDir, `${fix.id}.json`);
+        if (existsSync(fixPath)) {
+          writeFileSync(fixPath, JSON.stringify(fix, null, 2));
+          marked++;
+        }
+      } catch { /* skip */ }
+    }
+
+    // Rebuild FIXES.md
+    try {
+      const allFixes = loadFixes(fixesDir);
+      const pending = allFixes.filter(f => f.status === 'pending_review');
+      const applied = allFixes.filter(f => f.status === 'applied');
+
+      const mdLines: string[] = [
+        '# Utopia Self-Healing Fixes',
+        '',
+        'Auto-generated by the Utopia SDK. Coding agents: apply the pending fixes below,',
+        'then delete the corresponding JSON file from `.utopia/fixes/`.',
+        '',
+      ];
+
+      if (pending.length > 0) {
+        mdLines.push(`## Pending Fixes (${pending.length})`);
+        mdLines.push('');
+        for (const f of pending) {
+          mdLines.push(`### \`${f.function_name}\` -- ${f.error.type}`);
+          mdLines.push(`- **File:** \`${f.source_file}\``);
+          mdLines.push(`- **Error:** ${f.error.message}`);
+          mdLines.push(`- **Explanation:** ${f.explanation}`);
+          mdLines.push('');
+        }
+      }
+
+      if (applied.length > 0) {
+        mdLines.push(`## Applied Fixes (${applied.length})`);
+        mdLines.push('');
+        for (const f of applied) {
+          mdLines.push(`- \`${f.function_name}\` in \`${f.source_file}\` -- ${f.explanation}`);
+        }
+        mdLines.push('');
+      }
+
+      const mdPath = resolve(fixesDir, '..', 'FIXES.md');
+      if (pending.length === 0 && applied.length === 0) {
+        if (existsSync(mdPath)) unlinkSync(mdPath);
+      } else {
+        writeFileSync(mdPath, mdLines.join('\n'));
+      }
+    } catch { /* non-fatal */ }
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Marked ${marked} fix(es) for "${function_name}" as applied. ${
+          matching.length > 1 ? `(${matching.length} total matches)` : ''
+        }`,
+      }],
+    };
   },
 );
 

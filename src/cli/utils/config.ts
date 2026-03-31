@@ -9,6 +9,7 @@ export type SupportedFramework = 'nextjs' | 'react' | 'python' | 'unsupported';
 export type DataMode = 'schemas' | 'full';
 export type ProbeGoal = 'debugging' | 'security' | 'both';
 export type AgentType = 'claude' | 'codex';
+export type UtopiaMode = 'instrument' | 'heal' | 'both';
 
 export interface UtopiaConfig {
   version: string;
@@ -23,6 +24,7 @@ export interface UtopiaConfig {
   dataMode: DataMode;
   probeGoal: ProbeGoal;
   agent: AgentType;
+  utopiaMode: UtopiaMode;
 }
 
 export async function loadConfig(dir?: string): Promise<UtopiaConfig> {
@@ -39,7 +41,7 @@ export async function saveConfig(config: UtopiaConfig, dir?: string): Promise<vo
   await writeFile(resolve(configDir, CONFIG_FILE), JSON.stringify(config, null, 2));
 
   const gitignorePath = resolve(configDir, '.gitignore');
-  await writeFile(gitignorePath, 'config.json\ndata.db\nserve.pid\nserve.log\nsnapshots/\n');
+  await writeFile(gitignorePath, 'config.json\ndata.db\nserve.pid\nserve.log\nsnapshots/\nfixes/\nFIXES.md\n');
 }
 
 export function configExists(dir?: string): boolean {

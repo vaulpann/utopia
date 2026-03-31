@@ -9,6 +9,7 @@ import { mcpCommand } from './commands/mcp.js';
 import { contextCommand } from './commands/context.js';
 import { codexCommand } from './commands/codex.js';
 import { statusCommand } from './commands/status.js';
+import { healCommand } from './commands/heal.js';
 import { showFriends, showNextGen, showSentience } from './commands/easter-eggs.js';
 
 const program = new Command();
@@ -16,7 +17,7 @@ const program = new Command();
 program
   .name('utopia')
   .description('Production-aware probes that give AI coding agents real-time context')
-  .version('0.1.0');
+  .version('0.2.0');
 
 program.addCommand(initCommand);
 program.addCommand(instrumentCommand);
@@ -28,6 +29,7 @@ program.addCommand(mcpCommand);
 program.addCommand(contextCommand);
 program.addCommand(codexCommand);
 program.addCommand(statusCommand);
+program.addCommand(healCommand);
 
 // Easter eggs — hidden from help
 program.addCommand(new Command('friends').action(async () => { await showFriends(); }), { hidden: true });
