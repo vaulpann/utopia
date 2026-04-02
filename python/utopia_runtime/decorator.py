@@ -65,8 +65,15 @@ def _compile_fix(fixed_code: str, func: Callable) -> Optional[Callable]:
         return None
 
 
+# Exceptions that should NEVER be healed — these indicate structural problems
+# that can't be fixed by rewriting a function body.
+_NEVER_HEAL = (RecursionError, SystemExit, KeyboardInterrupt, MemoryError, GeneratorExit)
+
+
 def _should_heal(exc: Exception, ignore: tuple[type[BaseException], ...]) -> bool:
     """Return True if this exception should trigger self-healing."""
+    if isinstance(exc, _NEVER_HEAL):
+        return False
     if ignore and isinstance(exc, ignore):
         return False
     return True
@@ -105,6 +112,7 @@ def _handle_error(
         error_traceback=error_tb,
         args_repr=repr(args),
         kwargs_repr=repr(kwargs),
+        source_file=source_file,
     )
 
     if fix_result is None:

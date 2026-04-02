@@ -52,11 +52,17 @@ def configure(
     api_key: str = "",
     model: str = "",
     base_url: str = "",
+    provider: str = "",
+    anthropic_api_key: str = "",
 ) -> None:
     """Set self-healing configuration programmatically.
 
-    Any value left empty falls back to the corresponding env var:
-    ``OPENAI_API_KEY``, ``UTOPIA_MODEL``, ``UTOPIA_BASE_URL``.
+    Args:
+        api_key: OpenAI API key (falls back to ``OPENAI_API_KEY`` env var)
+        model: Model to use (falls back to ``UTOPIA_MODEL``, default ``gpt-4o`` or ``claude-sonnet-4-20250514``)
+        base_url: API base URL (falls back to ``UTOPIA_BASE_URL``)
+        provider: ``"openai"`` or ``"anthropic"`` (falls back to ``UTOPIA_PROVIDER``, auto-detects from available keys)
+        anthropic_api_key: Anthropic API key (falls back to ``ANTHROPIC_API_KEY`` env var)
     """
     if api_key:
         _healer_config["api_key"] = api_key
@@ -64,6 +70,10 @@ def configure(
         _healer_config["model"] = model
     if base_url:
         _healer_config["base_url"] = base_url
+    if provider:
+        _healer_config["provider"] = provider
+    if anthropic_api_key:
+        _healer_config["anthropic_api_key"] = anthropic_api_key
 
 
 __all__ = [

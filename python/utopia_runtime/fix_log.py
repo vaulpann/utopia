@@ -160,6 +160,160 @@ def _preserve_decorators(original_code: str, fixed_code: str) -> str:
     return "\n".join(prefixed) + "\n" + fixed_code
 
 
+def _preserve_probes(original_code: str, fixed_code: str) -> str:
+    """Inject utopia probe blocks from the original code into the fixed code.
+
+    Probes follow the pattern:
+      - ``_utopia_start = time.time()`` at the top of the function body
+      - ``# utopia:probe`` + ``try: utopia_runtime.report_*() except: pass``
+        block usually before the return
+
+    The AI-generated fix doesn't include probes. If we don't re-inject them,
+    agents applying the fix will accidentally strip probes from the codebase.
+    """
+    if "utopia:probe" not in original_code:
+        return fixed_code
+
+    original_lines = original_code.split("\n")
+
+    # --- Extract the timing line ---
+    timing_line = ""
+    for line in original_lines:
+        stripped = line.lstrip()
+        if stripped.startswith("_utopia_start"):
+            timing_line = line
+            break
+
+    # --- Extract probe blocks (# utopia:probe + try/except) ---
+    probe_blocks: list[list[str]] = []
+    i = 0
+    while i < len(original_lines):
+        stripped = original_lines[i].lstrip()
+        if stripped == "# utopia:probe":
+            block = [original_lines[i]]
+            i += 1
+            # Skip blank lines
+            while i < len(original_lines) and original_lines[i].strip() == "":
+                block.append(original_lines[i])
+                i += 1
+            # Capture the try/except block
+            if i < len(original_lines) and original_lines[i].lstrip().startswith("try:"):
+                try_indent = len(original_lines[i]) - len(original_lines[i].lstrip())
+                block.append(original_lines[i])
+                i += 1
+                while i < len(original_lines):
+                    line = original_lines[i]
+                    if line.strip() == "":
+                        block.append(line)
+                        i += 1
+                        continue
+                    line_indent = len(line) - len(line.lstrip())
+                    if line_indent <= try_indent and line.strip() != "":
+                        if line.lstrip().startswith("except"):
+                            block.append(line)
+                            i += 1
+                            # Capture except body
+                            while i < len(original_lines):
+                                eline = original_lines[i]
+                                if eline.strip() == "":
+                                    block.append(eline)
+                                    i += 1
+                                    continue
+                                if (len(eline) - len(eline.lstrip())) <= try_indent:
+                                    break
+                                block.append(eline)
+                                i += 1
+                            break
+                        break
+                    block.append(line)
+                    i += 1
+            probe_blocks.append(block)
+        else:
+            i += 1
+
+    if not probe_blocks and not timing_line:
+        return fixed_code
+
+    # --- Inject into the fixed code ---
+    fixed_lines = fixed_code.split("\n")
+
+    # Find the function body indentation
+    body_indent = "    "
+    for fl in fixed_lines:
+        stripped = fl.lstrip()
+        if stripped and not stripped.startswith("def ") and not stripped.startswith("async def "):
+            body_indent = fl[: len(fl) - len(fl.lstrip())]
+            break
+
+    result_lines: list[str] = []
+
+    # Find the def line, insert timing after it (and after docstring if present)
+    inserted_timing = False
+    in_docstring = False
+    docstring_delim = ""
+    for j, fl in enumerate(fixed_lines):
+        result_lines.append(fl)
+        stripped = fl.lstrip()
+
+        if not inserted_timing and (stripped.startswith("def ") or stripped.startswith("async def ")):
+            # Check if next non-empty line is a docstring
+            continue
+
+        if not inserted_timing and not in_docstring:
+            # Check if this is a docstring start
+            if stripped.startswith('"""') or stripped.startswith("'''"):
+                docstring_delim = stripped[:3]
+                if stripped.count(docstring_delim) >= 2:
+                    # Single-line docstring, insert timing after
+                    if timing_line:
+                        result_lines.append(body_indent + timing_line.lstrip())
+                    inserted_timing = True
+                else:
+                    in_docstring = True
+                continue
+            # Not a docstring and past the def line — insert timing here
+            if timing_line and j > 0:
+                # Insert before this line
+                result_lines.pop()
+                result_lines.append(body_indent + timing_line.lstrip())
+                result_lines.append(fl)
+                inserted_timing = True
+
+        if in_docstring:
+            if docstring_delim and docstring_delim in stripped and j > 0:
+                in_docstring = False
+                if timing_line:
+                    result_lines.append(body_indent + timing_line.lstrip())
+                inserted_timing = True
+
+    # Find the last return statement and insert probe blocks before it.
+    # Probe lines are kept exactly as extracted from the original — their
+    # indentation is already correct relative to the function body.
+    if probe_blocks:
+        final_lines = result_lines
+        result_lines = []
+        last_return_idx = -1
+        for j, fl in enumerate(final_lines):
+            if fl.lstrip().startswith("return "):
+                last_return_idx = j
+
+        for j, fl in enumerate(final_lines):
+            if j == last_return_idx and probe_blocks:
+                for block in probe_blocks:
+                    for bl in block:
+                        result_lines.append(bl)
+                probe_blocks = []
+            result_lines.append(fl)
+
+        # If no return found, append probe blocks at the end
+        if probe_blocks:
+            for block in probe_blocks:
+                for bl in block:
+                    result_lines.append(bl)
+
+    return "\n".join(result_lines)
+
+
 def log_fix(
     function_name: str,
     source_file: str,
@@ -179,6 +333,7 @@ def log_fix(
     try:
         # Ensure the fixed code includes decorators from the original
         fixed_code = _preserve_decorators(original_code, fixed_code)
+        fixed_code = _preserve_probes(original_code, fixed_code)
 
         fixes_dir = _get_fixes_dir()
         ts = datetime.now(timezone.utc)

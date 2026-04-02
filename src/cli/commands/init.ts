@@ -361,10 +361,7 @@ function setupAgentInstructions(cwd: string, config: UtopiaConfig): void {
     sections.push('3. Call `mark_fix_applied` to mark it done');
     sections.push('');
     sections.push('**Adding self-healing to more functions:**');
-    sections.push('```bash');
-    sections.push('utopia heal');
-    sections.push('```');
-    sections.push('This will analyze the codebase and add `@utopia` decorators to functions that should self-heal.');
+    sections.push('Run `utopia instrument` again (after `utopia destruct`) to re-analyze the codebase and add `@utopia` decorators.');
   }
 
 
@@ -506,32 +503,21 @@ export const initCommand = new Command('init')
     ]);
 
     // Utopia mode — what capabilities to enable
-    const isPython = detectedFramework === 'python';
-    const modeChoices = isPython
-      ? [
-          { name: 'Production probes (observability — see how code runs in production)', value: 'instrument' },
-          { name: 'Self-healing functions (auto-fix errors at runtime via AI)', value: 'heal' },
-          { name: 'Both — probes + self-healing', value: 'both' },
-        ]
-      : [
-          { name: 'Production probes (observability — see how code runs in production)', value: 'instrument' },
-        ];
+    const modeChoices = [
+      { name: 'Production probes (observability — see how code runs in production)', value: 'instrument' },
+      { name: 'Self-healing functions (auto-fix errors at runtime via AI)', value: 'heal' },
+      { name: 'Both — probes + self-healing', value: 'both' },
+    ];
 
-    let utopiaMode: string;
-    if (modeChoices.length === 1) {
-      utopiaMode = 'instrument';
-      console.log(chalk.dim('  Mode: Production probes (self-healing is Python-only for now)\n'));
-    } else {
-      const modeAnswer = await inquirer.prompt<{ utopiaMode: string }>([
-        {
-          type: 'list',
-          name: 'utopiaMode',
-          message: 'What capabilities do you want?',
-          choices: modeChoices,
-        },
-      ]);
-      utopiaMode = modeAnswer.utopiaMode;
-    }
+    const modeAnswer = await inquirer.prompt<{ utopiaMode: string }>([
+      {
+        type: 'list',
+        name: 'utopiaMode',
+        message: 'What capabilities do you want?',
+        choices: modeChoices,
+      },
+    ]);
+    const utopiaMode = modeAnswer.utopiaMode;
 
     const wantsProbes = utopiaMode === 'instrument' || utopiaMode === 'both';
     const wantsHeal = utopiaMode === 'heal' || utopiaMode === 'both';
@@ -647,18 +633,25 @@ export const initCommand = new Command('init')
 
     console.log(chalk.bold('\n  Next Steps:\n'));
     let step = 1;
+    const modeDesc = wantsProbes && wantsHeal ? 'probes + self-healing'
+      : wantsHeal ? 'self-healing decorators' : 'production probes';
+    console.log(`    ${step}. ${chalk.white('utopia instrument')}   — Add ${modeDesc} to your codebase`);
+    step++;
     if (wantsProbes) {
-      console.log(`    ${step}. ${chalk.white('utopia instrument')}   — Add production probes to your codebase`);
-      step++;
       console.log(`    ${step}. ${chalk.white('utopia validate')}     — Verify probes are valid`);
       step++;
       console.log(`    ${step}. ${chalk.white('utopia serve -b')}     — Start the data service`);
       step++;
     }
     if (wantsHeal) {
-      console.log(`    ${step}. ${chalk.white('utopia heal')}         — Add self-healing @utopia decorators`);
-      step++;
-      console.log(`    ${step}. ${chalk.white('export OPENAI_API_KEY="sk-..."')}  — Set your OpenAI key for runtime healing`);
+      const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+      const hasOpenAI = !!process.env.OPENAI_API_KEY;
+      if (hasAnthropic || hasOpenAI) {
+        const keyName = hasAnthropic && !hasOpenAI ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+        console.log(chalk.dim(`    ${step}. ${keyName} detected — self-healing is ready`));
+      } else {
+        console.log(`    ${step}. ${chalk.white('export OPENAI_API_KEY="sk-..."')}  or  ${chalk.white('export ANTHROPIC_API_KEY="sk-ant-..."')}`);
+      }
       step++;
     }
     console.log(`    ${step}. Run your app and browse around`);

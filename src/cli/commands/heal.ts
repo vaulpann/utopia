@@ -32,6 +32,19 @@ function installPythonRuntime(cwd: string): { ok: boolean; error?: string } {
   }
 }
 
+function installJsRuntime(cwd: string): { ok: boolean; error?: string } {
+  let pm = 'npm';
+  if (existsSync(resolve(cwd, 'pnpm-lock.yaml'))) pm = 'pnpm';
+  else if (existsSync(resolve(cwd, 'yarn.lock'))) pm = 'yarn';
+
+  try {
+    execSync(`${pm} add utopia-runtime 2>&1`, { cwd, stdio: 'pipe' });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `${pm} add utopia-runtime failed: ${(err as Error).message}` };
+  }
+}
+
 function checkOpenAIKey(): boolean {
   return !!process.env.OPENAI_API_KEY;
 }
@@ -41,14 +54,23 @@ function checkOpenAIKey(): boolean {
 // ---------------------------------------------------------------------------
 
 function buildHealPrompt(config: UtopiaConfig): string {
-  return `You are adding self-healing capabilities to a Python codebase using the Utopia SDK.
+  const isPython = config.framework === 'python';
 
-The Utopia SDK provides a \`@utopia\` decorator that wraps Python functions with automatic error recovery. When a decorated function throws an exception at runtime:
+  if (isPython) {
+    return buildPythonHealPrompt();
+  }
+  return buildJsHealPrompt();
+}
 
-1. The error and function source code are sent to the OpenAI API
-2. OpenAI generates a fix
+function buildPythonHealPrompt(): string {
+  return `You are adding self-healing capabilities to a Python codebase using utopia-runtime.
+
+The \`@utopia\` decorator wraps Python functions with automatic error recovery. When a decorated function throws an exception at runtime:
+
+1. The error and function source code are sent to OpenAI or Anthropic
+2. The AI generates a fix
 3. The fix is hot-patched and re-executed at runtime
-4. The fix is logged to \`.utopia/fixes/\` and \`.utopia/FIXES.md\` so that next time a coding agent (you!) spins up, the fix is already there — ready to be permanently applied
+4. The fix is logged to \`.utopia/fixes/\` so the next coding agent can apply it permanently
 
 ## How to import
 
@@ -56,105 +78,167 @@ The Utopia SDK provides a \`@utopia\` decorator that wraps Python functions with
 from utopia_runtime import utopia
 \`\`\`
 
-## How to use the decorator
+## Usage
 
 \`\`\`python
-from utopia_runtime import utopia
-
 @utopia
 def process_payment(order_id: str, amount: float):
-    # If this crashes at runtime, it self-heals
     ...
 
 @utopia
 async def fetch_user_data(user_id: str):
-    # Works with async functions too
     ...
 
 @utopia(ignore=[ValueError, KeyError])
 def strict_parser(data: str):
-    # ValueError and KeyError are INTENTIONAL here — they pass through untouched
-    # Other unexpected errors will still self-heal
     if not data:
-        raise ValueError("data is required")
-    return json.loads(data)
+        raise ValueError("data is required")  # intentional — passes through
+    return json.loads(data)  # unexpected errors self-heal
 \`\`\`
 
 ## Intentional vs unexpected errors
 
-The \`ignore\` parameter tells \`@utopia\` which exception types are **intentional** — these are errors the function raises on purpose as part of its contract (validation errors, not-found errors, permission errors, etc.). They pass through with zero overhead.
-
-**Everything else** is treated as an unexpected bug and triggers self-healing.
-
-Use \`ignore\` when a function intentionally raises:
-- \`ValueError\` / \`TypeError\` for input validation
-- \`KeyError\` / \`IndexError\` for lookup failures that callers handle
-- \`PermissionError\` / \`AuthenticationError\` for access control
-- Custom exception classes that are part of the function's API
-
-## Configuration (already handled — users set these env vars)
-
-\`\`\`
-OPENAI_API_KEY=sk-...     # Required — the API key for self-healing
-UTOPIA_MODEL=gpt-4o       # Optional — defaults to gpt-4o
-\`\`\`
-
-Or in code:
-\`\`\`python
-from utopia_runtime import configure
-configure(api_key="sk-...", model="gpt-4o-mini")
-\`\`\`
+Use \`ignore\` for exception types the function raises **on purpose** (validation, not-found, auth errors). Everything else triggers self-healing.
 
 ## Your Task
 
-1. **Explore the codebase.** Understand the architecture, find all Python files, identify the important functions.
+1. **Explore the codebase.** Find all Python files, identify the important functions.
 
-2. **Add the \`@utopia\` decorator to functions that should self-heal.** These are functions where runtime errors would be most impactful:
-
-   **MUST decorate:**
-   - API route handlers / view functions / endpoint handlers
-   - Functions that process external data (API responses, user input, file parsing)
-   - Functions that interact with databases (queries, mutations, migrations)
-   - Functions that call external services or APIs
-   - Business logic functions (payment processing, data transformations, calculations)
-   - Functions that handle authentication / authorization
-   - Data processing / ETL functions
-   - CLI command handlers
-   - Background task / job handlers
-   - Webhook handlers
+2. **Add \`@utopia\` to functions where runtime errors matter:**
+   - API route handlers / endpoint handlers
+   - Functions processing external data (API responses, user input, file parsing)
+   - Database interactions (queries, mutations)
+   - External service / API calls
+   - Business logic (payments, transformations, calculations)
+   - Auth / authorization functions
+   - Data processing / ETL
+   - CLI command handlers, background tasks, webhooks
 
    **DO NOT decorate:**
    - Tiny utility functions (string formatting, simple getters)
-   - Functions that are just type definitions or constants
+   - Type definitions or constants
    - Test functions
-   - Functions that are already wrapped in comprehensive error handling with custom recovery logic
    - \`__init__\`, \`__repr__\`, \`__str__\` and similar dunder methods
-   - Functions in third-party or generated code
+   - Third-party or generated code
 
-3. **Add the import to every file where you add decorators:**
+3. **Add the import** to every file: \`from utopia_runtime import utopia\`
+
+4. **Placement:** \`@utopia\` goes BELOW other decorators (outermost wrapper):
    \`\`\`python
-   from utopia_runtime import utopia
+   @app.route("/users")
+   @require_auth
+   @utopia
+   def get_users():
+       ...
    \`\`\`
-   - Add it near the top with other imports
-   - Check if it's already imported first — don't duplicate
 
-4. **Placement rules:**
-   - The \`@utopia\` decorator should be the OUTERMOST decorator (first one, closest to the function name)
-   - If there are other decorators, \`@utopia\` goes BELOW them (it wraps the already-decorated function)
-   - Example:
-     \`\`\`python
-     @app.route("/users")    # framework decorator on top
-     @require_auth           # middleware decorator
-     @utopia                 # utopia goes last (outermost wrapper)
-     def get_users():
-         ...
-     \`\`\`
+5. **Use \`ignore\`** when a function intentionally raises (e.g. \`@utopia(ignore=[ValueError])\`)
 
-5. **Be thorough but smart.** The goal is to protect the functions where errors actually matter — the ones that would break the user experience, corrupt data, or cause outages. Every function you decorate becomes self-healing.
+6. **Give a summary** of what you decorated and why. Group by file.`;
+}
 
-6. **Give a summary** of what you decorated and why. Group by file.
+function buildJsHealPrompt(): string {
+  return `You are adding self-healing capabilities to a JavaScript/TypeScript codebase using utopia-runtime.
 
-Remember: Every \`@utopia\` decorator you add is a function that will fix itself at runtime instead of crashing. The fix gets logged so you can apply it permanently next time. This is the future.`;
+The \`utopia()\` wrapper wraps functions with automatic error recovery. When a wrapped function throws an exception at runtime:
+
+1. The error and function source are sent to OpenAI or Anthropic
+2. The AI generates a fix
+3. For async functions: the fix is hot-patched and re-executed at runtime
+4. For sync functions: the fix is logged for the next run
+5. Everything is logged to \`.utopia/fixes/\` so the next coding agent can apply it permanently
+
+## How to import
+
+\`\`\`typescript
+import { utopia } from 'utopia-runtime';
+\`\`\`
+
+## Usage
+
+\`\`\`typescript
+// Wrap a function — works with named functions, arrows, async
+const processPayment = utopia(async (orderId: string, amount: number) => {
+  const charge = await stripe.charges.create({ amount, currency: 'usd' });
+  return charge.id;
+});
+
+// With a name (helps with fix logging)
+const fetchUser = utopia(async (userId: string) => {
+  const res = await fetch(\`/api/users/\${userId}\`);
+  return res.json();
+}, { name: 'fetchUser' });
+
+// Ignore intentional errors
+const strictParse = utopia((data: string) => {
+  if (!data) throw new TypeError('data required');  // intentional — passes through
+  return JSON.parse(data);  // unexpected errors self-heal
+}, { ignore: [TypeError] });
+\`\`\`
+
+## How it works
+
+- \`utopia(fn)\` returns a wrapped version of \`fn\` with the same signature
+- Async functions get full hot-patching (fix is compiled and re-run immediately)
+- Sync functions log the fix for the next run (can't await AI call synchronously)
+- The \`ignore\` option accepts an array of Error subclasses that pass through without healing
+- The \`name\` option sets the function name for fix logging (auto-detected from \`fn.name\` if available)
+
+## Your Task
+
+1. **Explore the codebase.** Find all source files, identify the important functions.
+
+2. **Wrap functions where runtime errors matter with \`utopia()\`:**
+   - API route handlers / endpoint handlers / server actions
+   - Functions processing external data (API responses, user input, file parsing)
+   - Database interactions
+   - External service / API calls
+   - Business logic (payments, transformations, calculations)
+   - Auth / authorization functions
+   - Data processing, background jobs, webhooks
+   - React Server Components that fetch data
+
+   **DO NOT wrap:**
+   - Tiny utility functions (string formatting, simple getters)
+   - Type definitions or constants
+   - Test functions
+   - React client components (wrap the data-fetching functions they call instead)
+   - Third-party or generated code
+   - Functions that are already inside a utopia wrapper
+
+3. **Add the import** to every file: \`import { utopia } from 'utopia-runtime';\`
+   - Check if it's already imported first
+
+4. **Wrapping patterns:**
+
+   **Named export function:**
+   \`\`\`typescript
+   // Before
+   export async function getUser(id: string) { ... }
+   // After
+   export const getUser = utopia(async (id: string) => { ... }, { name: 'getUser' });
+   \`\`\`
+
+   **Default export:**
+   \`\`\`typescript
+   // Before
+   export default async function handler(req, res) { ... }
+   // After
+   const handler = utopia(async (req, res) => { ... }, { name: 'handler' });
+   export default handler;
+   \`\`\`
+
+   **Arrow in variable:**
+   \`\`\`typescript
+   // Before
+   const processData = async (data) => { ... };
+   // After
+   const processData = utopia(async (data) => { ... }, { name: 'processData' });
+   \`\`\`
+
+5. **Use \`ignore\`** when a function intentionally throws (e.g. \`{ ignore: [TypeError, RangeError] }\`)
+
+6. **Give a summary** of what you wrapped and why. Group by file.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +247,7 @@ Remember: Every \`@utopia\` decorator you add is a function that will fix itself
 
 const SNAPSHOT_DIR = '.utopia/snapshots';
 const SKIP_DIRS = new Set(['node_modules', '.next', 'dist', 'build', '.utopia', '.git', '__pycache__', 'venv', '.venv', 'coverage', '.env', 'env']);
-const SOURCE_EXTS = new Set(['.py']);
+const SOURCE_EXTS = new Set(['.py', '.ts', '.tsx', '.js', '.jsx']);
 
 function snapshotFiles(cwd: string): number {
   const snapshotBase = resolve(cwd, SNAPSHOT_DIR);
@@ -387,32 +471,42 @@ export const healCommand = new Command('heal')
     const config = await loadConfig(cwd);
 
     // Python-only for now
-    if (config.framework !== 'python' && !config.language.includes('python')) {
-      console.log(chalk.red('\n  Error: utopia heal currently supports Python projects only.'));
-      console.log(chalk.dim('  JS/TS support is coming soon.\n'));
-      process.exit(1);
-    }
+    const isPython = config.framework === 'python' || config.language.includes('python');
+    const isJs = !isPython;
 
     console.log(chalk.bold.cyan('\n  Utopia Self-Healing\n'));
 
-    // Check OpenAI API key
-    if (!checkOpenAIKey()) {
-      console.log(chalk.yellow('  Warning: OPENAI_API_KEY is not set.'));
-      console.log(chalk.dim('  Self-healing requires an OpenAI API key to generate fixes at runtime.'));
-      console.log(chalk.dim('  Set it before running your app:'));
-      console.log(chalk.white('    export OPENAI_API_KEY="sk-..."\n'));
+    // Check for API keys (OpenAI or Anthropic)
+    if (!checkOpenAIKey() && !process.env.ANTHROPIC_API_KEY) {
+      console.log(chalk.yellow('  Warning: No AI API key detected.'));
+      console.log(chalk.dim('  Self-healing requires an API key to generate fixes at runtime.'));
+      console.log(chalk.dim('  Set one before running your app:'));
+      console.log(chalk.white('    export OPENAI_API_KEY="sk-..."'));
+      console.log(chalk.white('    export ANTHROPIC_API_KEY="sk-ant-..."\n'));
     } else {
-      console.log(chalk.green('  OPENAI_API_KEY detected.\n'));
+      const provider = process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY ? 'Anthropic' : 'OpenAI';
+      console.log(chalk.green(`  ${provider} API key detected.\n`));
     }
 
-    // Install runtime (includes both probes and self-healing)
-    console.log(chalk.dim('  Installing utopia-runtime...'));
-    const rtResult = installPythonRuntime(cwd);
-    if (rtResult.ok) {
-      console.log(chalk.green('  utopia-runtime installed.'));
+    // Install runtime
+    if (isPython) {
+      console.log(chalk.dim('  Installing utopia-runtime (Python)...'));
+      const rtResult = installPythonRuntime(cwd);
+      if (rtResult.ok) {
+        console.log(chalk.green('  utopia-runtime installed.'));
+      } else {
+        console.log(chalk.red(`  Error installing utopia-runtime: ${rtResult.error}`));
+        console.log(chalk.dim('  The decorators won\'t work until utopia-runtime is installed.\n'));
+      }
     } else {
-      console.log(chalk.red(`  Error installing utopia-runtime: ${rtResult.error}`));
-      console.log(chalk.dim('  The decorators won\'t work until utopia-runtime is installed.\n'));
+      console.log(chalk.dim('  Installing utopia-runtime (JS/TS)...'));
+      const rtResult = installJsRuntime(cwd);
+      if (rtResult.ok) {
+        console.log(chalk.green('  utopia-runtime installed.'));
+      } else {
+        console.log(chalk.red(`  Error installing utopia-runtime: ${rtResult.error}`));
+        console.log(chalk.dim('  The wrapper won\'t work until utopia-runtime is installed.\n'));
+      }
     }
 
     // Check agent CLI
