@@ -9,7 +9,7 @@ import { mcpCommand } from './commands/mcp.js';
 import { contextCommand } from './commands/context.js';
 import { codexCommand } from './commands/codex.js';
 import { statusCommand } from './commands/status.js';
-import { healCommand } from './commands/heal.js';
+
 import { showFriends, showNextGen, showSentience } from './commands/easter-eggs.js';
 
 const program = new Command();
@@ -29,8 +29,6 @@ program.addCommand(mcpCommand);
 program.addCommand(contextCommand);
 program.addCommand(codexCommand);
 program.addCommand(statusCommand);
-program.addCommand(healCommand);
-
 // Easter eggs — hidden from help
 program.addCommand(new Command('friends').action(async () => { await showFriends(); }), { hidden: true });
 program.addCommand(new Command('nextgen').action(async () => { await showNextGen(); }), { hidden: true });

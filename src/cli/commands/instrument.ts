@@ -336,6 +336,7 @@ function frameworkProbeRules(config: UtopiaConfig): string {
 7. Never log passwords, tokens, API keys, or secrets
 8. Never await a probe call — fire and forget
 9. Get it right the first time
+10. **DO NOT use \`@utopia\` decorators or \`from utopia_runtime import utopia\`.** Those are for self-healing, NOT probes. You are adding probes using \`utopia_runtime.report_*()\` calls only.
 `;
     // Get the shared data mode + security rules (these are language-agnostic)
     const sharedRules = buildProbeRules(config);
@@ -420,6 +421,16 @@ ${config.probeGoal === 'security' || config.probeGoal === 'both' ? `4. **Add sec
 ${config.probeGoal === 'security' || config.probeGoal === 'both' ? '5' : '4'}. **Add the import to every file you add probes to.** ${config.framework === 'python' ? '`import utopia_runtime`' : '`import { __utopia } from \'utopia-runtime\';`'}
 
 ${config.probeGoal === 'security' || config.probeGoal === 'both' ? '6' : '5'}. Give a summary of what you instrumented and why.
+
+## CRITICAL: Probes vs Self-Healing — These Are Different Things
+
+**Probes** use \`__utopia.reportFunction()\`, \`__utopia.reportError()\`, etc. They capture runtime data and send it to the Utopia data service. They are \`// utopia:probe\` (or \`# utopia:probe\`) marked try/catch blocks that call the \`__utopia\` reporting API.
+
+**Self-healing** uses the \`utopia()\` wrapper function / \`@utopia\` decorator. That is a COMPLETELY DIFFERENT feature and is NOT what you are doing here.
+
+**DO NOT use \`utopia()\` wrappers or \`@utopia\` decorators.** You are adding PROBES, not self-healing. Use ONLY the \`__utopia.reportFunction()\`, \`__utopia.reportApi()\`, \`__utopia.reportError()\`, \`__utopia.reportInfra()\` methods inside \`// utopia:probe\` try/catch blocks.
+
+**DO NOT import \`utopia\` from \`utopia-runtime\`.** Only import \`__utopia\`: ${config.framework === 'python' ? '`import utopia_runtime`' : '`import { __utopia } from \'utopia-runtime\';`'}
 
 Remember: These probes are how the code talks back to the agent. Make them rich, contextual, and useful.`;
 }
@@ -671,7 +682,7 @@ function pruneUnchangedSnapshots(cwd: string): void {
 function isAlreadyInstrumented(cwd: string): boolean {
   try {
     const result = execSync(
-      `grep -rl "utopia:probe" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.py" . 2>/dev/null | head -1`,
+      `grep -rl "utopia:probe" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.py" --exclude-dir=".utopia" --exclude-dir="node_modules" --exclude-dir=".venv" --exclude-dir="venv" --exclude-dir=".next" --exclude-dir="dist" --exclude-dir="build" --exclude-dir="coverage" --exclude-dir="__pycache__" . 2>/dev/null | head -1`,
       { cwd, stdio: 'pipe', encoding: 'utf-8' }
     );
     return result.trim().length > 0;
@@ -818,8 +829,196 @@ function checkAgentAvailable(agent: string): boolean {
 // instrument command — initial, full-codebase instrumentation
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Self-healing prompt builders (used when mode includes heal)
+// ---------------------------------------------------------------------------
+
+function buildHealPrompt(config: UtopiaConfig): string {
+  if (config.framework === 'python') return buildPythonHealPrompt();
+  return buildJsHealPrompt();
+}
+
+function buildPythonHealPrompt(): string {
+  return `You are adding self-healing capabilities to a Python codebase using utopia-runtime.
+
+The \`@utopia\` decorator wraps Python functions with automatic error recovery. When a decorated function throws an exception at runtime:
+
+1. The error and function source code are sent to OpenAI or Anthropic
+2. The AI generates a fix
+3. The fix is hot-patched and re-executed at runtime
+4. The fix is logged to \`.utopia/fixes/\` so the next coding agent can apply it permanently
+
+## How to import
+
+\`\`\`python
+from utopia_runtime import utopia
+\`\`\`
+
+## Usage
+
+\`\`\`python
+@utopia
+def process_payment(order_id: str, amount: float):
+    ...
+
+@utopia
+async def fetch_user_data(user_id: str):
+    ...
+
+@utopia(ignore=[ValueError, KeyError])
+def strict_parser(data: str):
+    if not data:
+        raise ValueError("data is required")  # intentional — passes through
+    return json.loads(data)  # unexpected errors self-heal
+\`\`\`
+
+## Intentional vs unexpected errors
+
+Use \`ignore\` for exception types the function raises **on purpose** (validation, not-found, auth errors). Everything else triggers self-healing.
+
+## Your Task
+
+1. **Explore the codebase.** Find all Python files, identify the important functions.
+
+2. **Add \`@utopia\` to functions where runtime errors matter:**
+   - API route handlers / endpoint handlers
+   - Functions processing external data (API responses, user input, file parsing)
+   - Database interactions (queries, mutations)
+   - External service / API calls
+   - Business logic (payments, transformations, calculations)
+   - Auth / authorization functions
+   - Data processing / ETL
+   - CLI command handlers, background tasks, webhooks
+
+   **DO NOT decorate:**
+   - Tiny utility functions (string formatting, simple getters)
+   - Type definitions or constants
+   - Test functions
+   - \`__init__\`, \`__repr__\`, \`__str__\` and similar dunder methods
+   - Third-party or generated code
+
+3. **Add the import** to every file: \`from utopia_runtime import utopia\`
+
+4. **Placement:** \`@utopia\` goes BELOW other decorators (outermost wrapper):
+   \`\`\`python
+   @app.route("/users")
+   @require_auth
+   @utopia
+   def get_users():
+       ...
+   \`\`\`
+
+5. **Use \`ignore\`** when a function intentionally raises (e.g. \`@utopia(ignore=[ValueError])\`)
+
+6. **Give a summary** of what you decorated and why. Group by file.`;
+}
+
+function buildJsHealPrompt(): string {
+  return `You are adding self-healing capabilities to a JavaScript/TypeScript codebase using utopia-runtime.
+
+The \`utopia()\` wrapper wraps functions with automatic error recovery. When a wrapped function throws an exception at runtime:
+
+1. The error and function source are sent to OpenAI or Anthropic
+2. The AI generates a fix
+3. For async functions: the fix is hot-patched and re-executed at runtime
+4. For sync functions: the fix is logged for the next run
+5. Everything is logged to \`.utopia/fixes/\` so the next coding agent can apply it permanently
+
+## How to import
+
+\`\`\`typescript
+import { utopia } from 'utopia-runtime';
+\`\`\`
+
+## Usage
+
+\`\`\`typescript
+const processPayment = utopia(async (orderId: string, amount: number) => {
+  const charge = await stripe.charges.create({ amount, currency: 'usd' });
+  return charge.id;
+});
+
+const fetchUser = utopia(async (userId: string) => {
+  const res = await fetch(\`/api/users/\${userId}\`);
+  return res.json();
+}, { name: 'fetchUser' });
+
+const strictParse = utopia((data: string) => {
+  if (!data) throw new TypeError('data required');  // intentional — passes through
+  return JSON.parse(data);  // unexpected errors self-heal
+}, { ignore: [TypeError] });
+\`\`\`
+
+## How it works
+
+- \`utopia(fn)\` returns a wrapped version of \`fn\` with the same signature
+- Async functions get full hot-patching (fix is compiled and re-run immediately)
+- Sync functions log the fix for the next run (can't await AI call synchronously)
+- The \`ignore\` option accepts an array of Error subclasses that pass through without healing
+- The \`name\` option sets the function name for fix logging (auto-detected from \`fn.name\` if available)
+
+## Your Task
+
+1. **Explore the codebase.** Find all source files, identify the important functions.
+
+2. **Wrap functions where runtime errors matter with \`utopia()\`:**
+   - API route handlers / endpoint handlers / server actions
+   - Functions processing external data (API responses, user input, file parsing)
+   - Database interactions
+   - External service / API calls
+   - Business logic (payments, transformations, calculations)
+   - Auth / authorization functions
+   - Data processing, background jobs, webhooks
+   - React Server Components that fetch data
+
+   **DO NOT wrap:**
+   - Tiny utility functions (string formatting, simple getters)
+   - Type definitions or constants
+   - Test functions
+   - React client components (wrap the data-fetching functions they call instead)
+   - Third-party or generated code
+   - Functions that are already inside a utopia wrapper
+
+3. **Add the import** to every file: \`import { utopia } from 'utopia-runtime';\`
+
+4. **Wrapping patterns:**
+
+   **Named export function:**
+   \`\`\`typescript
+   // Before
+   export async function getUser(id: string) { ... }
+   // After
+   export const getUser = utopia(async (id: string) => { ... }, { name: 'getUser' });
+   \`\`\`
+
+   **Default export:**
+   \`\`\`typescript
+   // Before
+   export default async function handler(req, res) { ... }
+   // After
+   const handler = utopia(async (req, res) => { ... }, { name: 'handler' });
+   export default handler;
+   \`\`\`
+
+   **Arrow in variable:**
+   \`\`\`typescript
+   // Before
+   const processData = async (data) => { ... };
+   // After
+   const processData = utopia(async (data) => { ... }, { name: 'processData' });
+   \`\`\`
+
+5. **Use \`ignore\`** when a function intentionally throws (e.g. \`{ ignore: [TypeError, RangeError] }\`)
+
+6. **Give a summary** of what you wrapped and why. Group by file.`;
+}
+
+// ---------------------------------------------------------------------------
+// instrument command — handles probes, self-healing, or both based on mode
+// ---------------------------------------------------------------------------
+
 export const instrumentCommand = new Command('instrument')
-  .description('Add production probes to your codebase via Claude Code (initial instrumentation)')
+  .description('Add production probes and/or self-healing decorators to your codebase')
   .action(async () => {
     const cwd = process.cwd();
 
@@ -829,15 +1028,25 @@ export const instrumentCommand = new Command('instrument')
       process.exit(1);
     }
 
-    // Check if already instrumented
-    if (isAlreadyInstrumented(cwd)) {
+    const config = await loadConfig(cwd);
+    const mode = config.utopiaMode || 'instrument';
+    const wantsProbes = mode === 'instrument' || mode === 'both';
+    const wantsHeal = mode === 'heal' || mode === 'both';
+
+    // Check if probes already exist (only relevant if adding probes)
+    if (wantsProbes && isAlreadyInstrumented(cwd)) {
       console.log(chalk.yellow('\n  This codebase already has Utopia probes.'));
       console.log(chalk.dim('  Use "utopia reinstrument -p <purpose>" to add targeted probes.'));
-      console.log(chalk.dim('  Or remove existing probes first (search for "utopia:probe" markers).\n'));
-      process.exit(1);
+      if (wantsHeal) {
+        console.log(chalk.dim('  Self-healing decorators will still be added.\n'));
+      } else {
+        console.log(chalk.dim('  Or remove existing probes first (search for "utopia:probe" markers).\n'));
+        process.exit(1);
+      }
     }
 
-    const config = await loadConfig(cwd);
+    const agentName = config.agent === 'codex' ? 'Codex' : 'Claude Code';
+
     console.log(chalk.bold.cyan('\n  Utopia Instrumentation\n'));
 
     // Install runtime
@@ -850,13 +1059,27 @@ export const instrumentCommand = new Command('instrument')
       console.log(chalk.dim('  Your app will fail to resolve "utopia-runtime" until this is fixed.'));
     }
 
-    // Env vars
-    console.log(chalk.dim('  Verifying environment variables...'));
-    try { ensureEnvVars(cwd, config); } catch { /* non-fatal */ }
+    // Env vars (only for probes, not heal)
+    if (wantsProbes) {
+      console.log(chalk.dim('  Verifying environment variables...'));
+      try { ensureEnvVars(cwd, config); } catch { /* non-fatal */ }
+    }
+
+    // Check API key (only for heal)
+    if (wantsHeal) {
+      if (!process.env.OPENAI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
+        console.log(chalk.yellow('\n  Warning: No AI API key detected for self-healing.'));
+        console.log(chalk.dim('  Set one before running your app:'));
+        console.log(chalk.white('    export OPENAI_API_KEY="sk-..."'));
+        console.log(chalk.white('    export ANTHROPIC_API_KEY="sk-ant-..."'));
+      } else {
+        const provider = process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY ? 'Anthropic' : 'OpenAI';
+        console.log(chalk.green(`  ${provider} API key detected for self-healing.`));
+      }
+    }
     console.log('');
 
     // Check agent CLI
-    const agentName = config.agent === 'codex' ? 'Codex' : 'Claude Code';
     if (!checkAgentAvailable(config.agent)) {
       console.log(chalk.red(`  Error: ${agentName} CLI not found.`));
       if (config.agent === 'codex') {
@@ -867,32 +1090,56 @@ export const instrumentCommand = new Command('instrument')
       process.exit(1);
     }
 
-    // Snapshot all source files before agent modifies them
+    // Snapshot all source files
     console.log(chalk.dim('  Snapshotting source files...'));
     const snapshotCount = snapshotFiles(cwd);
     console.log(chalk.dim(`  Snapshotted ${snapshotCount} file(s).\n`));
 
-    console.log(chalk.dim(`  Launching ${agentName} for initial instrumentation...`));
-    console.log(chalk.dim(`  ${agentName} will analyze your codebase and add deep, contextual probes.\n`));
-    console.log(chalk.bold.white(`  --- ${agentName} Session ---\n`));
+    // --- Phase 1: Production probes ---
+    if (wantsProbes && !isAlreadyInstrumented(cwd)) {
+      console.log(chalk.dim(`  Launching ${agentName} for production probes...`));
+      console.log(chalk.dim(`  ${agentName} will analyze your codebase and add deep, contextual probes.\n`));
+      console.log(chalk.bold.white(`  --- ${agentName} Probe Session ---\n`));
 
-    const code = await spawnAgentSession(cwd, buildInstrumentationPrompt(config), config.agent);
+      const code = await spawnAgentSession(cwd, buildInstrumentationPrompt(config), config.agent);
 
-    console.log(chalk.bold.white(`\n  --- End ${agentName} Session ---\n`));
+      console.log(chalk.bold.white(`\n  --- End Probe Session ---\n`));
+
+      if (code === 0) {
+        console.log(chalk.bold.green('  Probes added.\n'));
+      } else {
+        console.log(chalk.yellow(`  ${agentName} exited with code ${code}.\n`));
+      }
+    }
+
+    // --- Phase 2: Self-healing decorators ---
+    if (wantsHeal) {
+      console.log(chalk.dim(`  Launching ${agentName} for self-healing decorators...`));
+      console.log(chalk.dim(`  ${agentName} will wrap key functions with self-healing.\n`));
+      console.log(chalk.bold.white(`  --- ${agentName} Heal Session ---\n`));
+
+      const code = await spawnAgentSession(cwd, buildHealPrompt(config), config.agent);
+
+      console.log(chalk.bold.white(`\n  --- End Heal Session ---\n`));
+
+      if (code === 0) {
+        console.log(chalk.bold.green('  Self-healing decorators added.\n'));
+      } else {
+        console.log(chalk.yellow(`  ${agentName} exited with code ${code}.\n`));
+      }
+    }
 
     // Prune snapshots for files that weren't modified
     pruneUnchangedSnapshots(cwd);
 
-    if (code === 0) {
-      console.log(chalk.bold.green('  Instrumentation complete!\n'));
-    } else {
-      console.log(chalk.yellow(`  ${agentName} exited with code ${code}.\n`));
-    }
+    console.log(chalk.bold.green('  Instrumentation complete!\n'));
 
     console.log(chalk.dim('  Next steps:'));
-    console.log(chalk.dim('    1. utopia validate   — Verify probe syntax'));
-    console.log(chalk.dim('    2. utopia serve      — Start the data service'));
-    console.log(chalk.dim('    3. Run your app and watch probe data flow in\n'));
+    if (wantsProbes) {
+      console.log(chalk.dim('    1. utopia validate   — Verify probe syntax'));
+      console.log(chalk.dim('    2. utopia serve      — Start the data service'));
+    }
+    console.log(chalk.dim(`    ${wantsProbes ? '3' : '1'}. Run your app\n`));
   });
 
 // ---------------------------------------------------------------------------
