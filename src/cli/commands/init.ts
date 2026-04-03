@@ -287,6 +287,13 @@ function setupAgentInstructions(cwd: string, config: UtopiaConfig): void {
     sections.push('- Call `get_production_context` with the file/function name');
     sections.push('- Call `get_impact_analysis` to see what depends on it');
     sections.push('');
+
+    sections.push('**Security:**');
+    sections.push('- Call `get_security_findings` to check for runtime-detected vulnerabilities');
+    sections.push('- These are findings from actual production data — not static analysis guesses');
+    sections.push('- Fix the vulnerability, then call `update_security_finding` to mark it resolved');
+    sections.push('- Run `utopia audit` for a comprehensive AI-powered security analysis');
+    sections.push('');
   }
 
   // Do NOT section
@@ -316,6 +323,8 @@ function setupAgentInstructions(cwd: string, config: UtopiaConfig): void {
     sections.push('- `get_database_context` — Database query patterns and data shapes');
     sections.push('- `get_infrastructure_context` — Deployment environment details');
     sections.push('- `get_impact_analysis` — What is affected by changing a file or function');
+    sections.push('- `get_security_findings` — Runtime security vulnerabilities detected from probe data');
+    sections.push('- `update_security_finding` — Mark a security finding as fixed or false positive');
   }
   sections.push('');
 
@@ -658,6 +667,8 @@ export const initCommand = new Command('init')
     step++;
     if (wantsProbes) {
       console.log(`    ${step}. ${chalk.white('utopia status')}       — See probe data flowing`);
+      step++;
+      console.log(`    ${step}. ${chalk.white('utopia audit')}        — Run security analysis on probe data`);
     }
     console.log('');
   });

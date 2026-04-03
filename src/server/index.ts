@@ -3,6 +3,7 @@ import { initDb, closeDb } from './db/index.js';
 import probesRouter from './routes/probes.js';
 import graphRouter from './routes/graph.js';
 import adminRouter from './routes/admin.js';
+import securityRouter from './routes/security.js';
 
 function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -27,6 +28,7 @@ export function createApp(dbPath: string): express.Application {
   app.use('/api/v1/probes', probesRouter);
   app.use('/api/v1/graph', graphRouter);
   app.use('/api/v1/admin', adminRouter);
+  app.use('/api/v1/security', securityRouter);
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'Not found' });

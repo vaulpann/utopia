@@ -1,6 +1,6 @@
 {
   "name": "@utopia-ai/cli",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Production probes + self-healing functions — gives AI coding agents real-time context and auto-fixes errors at runtime",
   "type": "module",
   "bin": {
