@@ -1109,6 +1109,126 @@ server.tool(
   },
 );
 
+// ---- Tool 10: get_security_findings ----
+
+server.tool(
+  'get_security_findings',
+  'Get security vulnerabilities detected from runtime probe data. Utopia analyzes actual production traffic — database queries, API responses, auth decisions, data flows — to find vulnerabilities that static analysis misses. Run `utopia audit` first to generate findings, or this tool will trigger a scan automatically.',
+  {
+    severity: z.enum(['critical', 'high', 'medium', 'low', 'all']).optional().default('all')
+      .describe('Filter by severity level'),
+    status: z.enum(['open', 'acknowledged', 'fixed', 'false_positive', 'all']).optional().default('open')
+      .describe('Filter by status. Default: open'),
+  },
+  async ({ severity, status }) => {
+    // First trigger a scan to ensure findings are fresh
+    try {
+      await fetch(`${ENDPOINT}/api/v1/security/scan?hours=168`, { method: 'POST', signal: AbortSignal.timeout(10_000) });
+    } catch { /* scan failed — still try to return existing findings */ }
+
+    // Fetch findings
+    const params: Record<string, string> = {};
+    if (status) params.status = status;
+    if (severity && severity !== 'all') params.severity = severity;
+
+    const data = await fetchFromUtopia('/api/v1/security/findings', params);
+
+    if (isErrorResponse(data)) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Could not fetch security findings: ${data.error}\n\nMake sure the data service is running (utopia serve -b) and you have run utopia audit or utopia instrument with probes enabled.`,
+        }],
+      };
+    }
+
+    const response = data as { count: number; findings: Array<{
+      severity: string; title: string; description: string;
+      evidence: Record<string, unknown>; file: string; function_name: string;
+      rule_id: string; status: string; created_at: string; updated_at: string; id: string;
+    }> };
+
+    if (response.count === 0) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'No security findings. Either no vulnerabilities were detected, or there is not enough probe data yet. Run your app to generate probe data, then run `utopia audit` for a comprehensive analysis.',
+        }],
+      };
+    }
+
+    const lines: string[] = [];
+    lines.push(`Found ${response.count} security finding(s):`);
+    lines.push('');
+
+    // Group by severity
+    const bySeverity: Record<string, typeof response.findings> = {};
+    for (const f of response.findings) {
+      (bySeverity[f.severity] ??= []).push(f);
+    }
+
+    for (const sev of ['critical', 'high', 'medium', 'low', 'info']) {
+      const group = bySeverity[sev];
+      if (!group || group.length === 0) continue;
+
+      lines.push(`--- ${sev.toUpperCase()} (${group.length}) ---`);
+      lines.push('');
+
+      for (const f of group) {
+        lines.push(`  [${f.severity.toUpperCase()}] ${f.title}`);
+        lines.push(`  ${f.description}`);
+        if (f.file) lines.push(`  File: ${f.file}`);
+        if (f.function_name) lines.push(`  Function: ${f.function_name}`);
+        lines.push(`  Rule: ${f.rule_id}`);
+        lines.push(`  Status: ${f.status}`);
+        lines.push(`  Evidence: ${JSON.stringify(f.evidence)}`);
+        lines.push(`  ID: ${f.id}`);
+        lines.push('');
+      }
+    }
+
+    lines.push('To fix a finding: address the vulnerability in code, then update the finding status.');
+    lines.push('To dismiss a false positive: note the finding ID and mark it accordingly.');
+
+    return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+  },
+);
+
+// ---- Tool 11: update_security_finding ----
+
+server.tool(
+  'update_security_finding',
+  'Update the status of a security finding after fixing it or determining it is a false positive.',
+  {
+    finding_id: z.string().describe('The ID of the security finding to update'),
+    status: z.enum(['fixed', 'acknowledged', 'false_positive']).describe('New status for the finding'),
+  },
+  async ({ finding_id, status }) => {
+    try {
+      const res = await fetch(`${ENDPOINT}/api/v1/security/findings/${finding_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+        signal: AbortSignal.timeout(5_000),
+      });
+
+      if (!res.ok) {
+        return {
+          content: [{ type: 'text' as const, text: `Failed to update finding: HTTP ${res.status}` }],
+        };
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: `Finding ${finding_id} marked as "${status}".` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error updating finding: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------

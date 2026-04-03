@@ -1,6 +1,6 @@
 {
   "name": "utopia-runtime",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Production probes + self-healing functions for Utopia — gives AI coding agents real-time visibility and auto-fixes errors at runtime",
   "type": "module",
   "main": "./dist/index.js",

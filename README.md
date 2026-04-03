@@ -4,7 +4,7 @@
 
 ### Debug AI Generated Code at Lightning Speed
 
-**Your code talks back to the AI agents that wrote it. And now it fixes itself.**
+**Your code talks back to the AI agents that wrote it. It fixes itself. And it finds vulnerabilities static analysis can't.**
 
 [![npm version](https://img.shields.io/npm/v/@utopia-ai/cli.svg)](https://www.npmjs.com/package/@utopia-ai/cli)
 [![PyPI version](https://img.shields.io/pypi/v/utopia-runtime.svg)](https://pypi.org/project/utopia-runtime/)
@@ -22,12 +22,13 @@
 
 ---
 
-Utopia does two things:
+Utopia does three things:
 
 1. **Production probes** -- embeds intelligent observability into your codebase so AI agents see how code *actually runs* before writing a single line.
 2. **Self-healing functions** -- wraps your functions so they catch errors at runtime, generate AI-powered fixes via OpenAI or Anthropic, hot-patch them live, and log everything so your coding agent can apply the permanent fix instantly.
+3. **Runtime security audit** -- analyzes actual production data (API calls, database queries, auth decisions, data flows) to find vulnerabilities that static analysis tools miss completely.
 
-No more copying logs. No more explaining what went wrong. The agent already knows -- and the fix might already be written.
+No more copying logs. No more explaining what went wrong. The agent already knows -- the fix might already be written, and the vulnerabilities are already found.
 
 <br />
 
@@ -41,10 +42,91 @@ utopia serve -b      ->  Start the local data service
                      ->  Function crashes? Fixed at runtime by AI
                      ->  Fix logged to .utopia/fixes/
                      ->  AI agent queries probe data + pending fixes via MCP
-                     ->  Writes better code because it sees production
+utopia audit         ->  AI analyzes runtime data for security vulnerabilities
 ```
 
-`utopia instrument` handles everything in one command. Based on the mode you chose in `utopia init` (probes, self-healing, or both), it runs the appropriate agent sessions back-to-back.
+`utopia instrument` handles probes and self-healing in one command. `utopia audit` uses the probe data to find security issues that no static analysis tool could catch -- because it's looking at what your code *actually does* at runtime, not what it looks like on paper.
+
+<br />
+
+## Runtime Security Audit
+
+This is the thing no one else does. Every security tool today either scans code (static) or scans network traffic (DAST). Nobody analyzes the *semantic runtime behavior* -- what the code actually does with data, how auth decisions flow, what shapes cross trust boundaries.
+
+Utopia's probes capture all of that. `utopia audit` feeds it to an AI agent for deep security analysis.
+
+```bash
+utopia audit
+```
+
+### What it finds (real examples from production apps)
+
+**Auth bypass via UI-only gate:**
+```
+[CRITICAL] Lab content rendered to unauthenticated users — auth is UI overlay only
+
+Evidence: app/lab/layout.tsx renders {props.children} unconditionally, then adds
+an overlay on top. The probe records auth_enforcement: "overlay_ui_only". Any user
+can open DevTools and remove the overlay to access all lab content.
+
+Fix: Gate children at the server level — redirect before rendering.
+```
+
+**SQL injection through external API:**
+```
+[HIGH] Non-parameterized SQL WHERE clause sent to HuggingFace datasets API
+
+Evidence: buildWhereClause() uses string interpolation with single-quote doubling.
+The probe confirms: query_parameterized: false, escape_method: "single_quote_doubling".
+User-supplied category/language values flow directly into DuckDB SQL.
+
+Fix: Validate inputs against the known allowlists before building the clause.
+```
+
+**Credential exposure in client bundle:**
+```
+[HIGH] Private inference endpoint credentials potentially exposed client-side
+
+Evidence: NEXT_PUBLIC_INFERENCE_ENDPOINT bundles the private HF endpoint URL into
+the client. The probe shows 8+ consecutive 401s — the auth token is being sent
+from the browser to a paid, metered LLM endpoint.
+
+Fix: Proxy through an API route. Keep the token server-side.
+```
+
+**Host header injection in OAuth:**
+```
+[MEDIUM] OAuth redirect URI derived from request Host header
+
+Evidence: When the env var is unset, the fallback constructs the redirect URI from
+the request's hostname. The probe records source: "request_hostname". An attacker
+who controls the Host header steals the OAuth authorization code.
+
+Fix: Validate the hostname against an allowlist of known-good domains.
+```
+
+### Why this works
+
+Static analysis sees `return user` and doesn't know what `user` contains. Utopia's probes captured the actual response shape -- and the AI spotted that `password_hash` was in it.
+
+Static analysis sees a `try/catch` and assumes errors are handled. Utopia's probes captured that the catch block is re-throwing raw upstream error bodies to the client.
+
+Static analysis sees an auth middleware import. Utopia's probes captured that it only runs on `/api/*` routes, not on the routes that actually need it.
+
+**The probe data is the evidence. The AI is the analyst.**
+
+### How findings reach your agent
+
+After `utopia audit`, findings are stored in the data service. Your AI agent sees them via the `get_security_findings` MCP tool:
+
+```
+You: "Any security issues?"
+
+Agent: *calls get_security_findings*
+       -> Found 3 findings: auth bypass (critical), SQL injection (high),
+          Host header injection (medium)
+       -> Reads evidence, applies fixes, marks findings as resolved
+```
 
 <br />
 
@@ -113,41 +195,9 @@ Self-healing works with both OpenAI and Anthropic. It auto-detects which key you
 | `OPENAI_API_KEY` | OpenAI | `gpt-4o` |
 | `ANTHROPIC_API_KEY` | Anthropic | `claude-sonnet-4-20250514` |
 
-Override with `UTOPIA_PROVIDER`, `UTOPIA_MODEL`, or in code:
-
-```python
-from utopia_runtime import configure
-configure(provider="anthropic", anthropic_api_key="sk-ant-...", model="claude-sonnet-4-20250514")
-```
-
 ### Probe-Enriched Healing
 
 When both probes and self-healing are enabled, the healer queries your local Utopia data service for production context *before* calling the AI. The prompt includes recent errors, typical inputs, and function call patterns -- so the generated fix is informed by how the function actually behaves in production, not just the code and the error.
-
-If the data service isn't running or probes aren't enabled, healing still works -- it just uses the code + error context alone.
-
-### What the Fix Log Looks Like
-
-When a function self-heals, Utopia logs a JSON file and auto-generates `.utopia/FIXES.md`:
-
-```
-## Pending Fixes (1)
-
-### `process_payment` -- TypeError
-- File: `app/billing.py`
-- Error: int() argument must be a string or real number, not 'NoneType'
-- Explanation: Added None check for amount before converting to int
-
-Original code:
-    charge = stripe.charges.create(amount=int(amount), currency="usd")
-
-Fixed code:
-    if amount is None:
-        raise ValueError("amount cannot be None")
-    charge = stripe.charges.create(amount=int(amount * 100), currency="usd")
-```
-
-Your agent reads this via the `get_pending_fixes` MCP tool, applies the change, calls `mark_fix_applied`, and moves on.
 
 <br />
 
@@ -181,8 +231,6 @@ One command does everything based on the mode you selected:
 - **Self-healing only** -- AI adds `@utopia` decorators (Python) or `utopia()` wrappers (JS/TS)
 - **Both** -- runs probes first, then self-healing, back-to-back
 
-Takes 2-5 minutes per phase depending on codebase size.
-
 ### Run
 
 ```bash
@@ -192,30 +240,32 @@ npm run dev           # Start your app as usual
 
 Browse your app. Probes capture data. Self-healing catches errors. Both feed your agent.
 
+### Audit
+
+```bash
+utopia audit
+```
+
+Analyzes all collected probe data for security vulnerabilities. Your AI agent reads the codebase and the runtime data together -- finding issues that static analysis misses because it sees what the code *actually does*.
+
 ### See It Work
 
 Open your AI agent in the project. It will:
 
-1. Check `get_pending_fixes` -- apply any self-healing fixes that were generated at runtime
-2. Check `get_recent_errors` -- see what's been happening in production
-3. Use that context to write better code
-
-```
-You: "Getting errors on the /api/users endpoint, can you fix it?"
-
-Agent: *checks get_pending_fixes* -> fix already exists from self-healing
-       -> applies it permanently -> done
-```
+1. Check `get_pending_fixes` -- apply any self-healing fixes from runtime
+2. Check `get_security_findings` -- see vulnerabilities detected from probe data
+3. Check `get_recent_errors` -- see what's been happening in production
+4. Use all that context to write better, more secure code
 
 <br />
 
 ## Supported Frameworks
 
-| Framework | Language | Probes | Self-Healing |
-|-----------|----------|--------|--------------|
-| **Next.js** | TypeScript / JavaScript | Yes | Yes |
-| **React** | TypeScript / JavaScript | Yes | Yes |
-| **Python** | FastAPI, Flask, Django | Yes | Yes |
+| Framework | Language | Probes | Self-Healing | Security Audit |
+|-----------|----------|--------|--------------|----------------|
+| **Next.js** | TypeScript / JavaScript | Yes | Yes | Yes |
+| **React** | TypeScript / JavaScript | Yes | Yes | Yes |
+| **Python** | FastAPI, Flask, Django | Yes | Yes | Yes |
 
 <br />
 
@@ -228,17 +278,6 @@ Agent: *checks get_pending_fixes* -> fix already exists from self-healing
 
 <br />
 
-## Supported Healing Providers
-
-| Provider | Env Variable | Default Model |
-|----------|-------------|---------------|
-| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o` |
-| **Anthropic** | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
-
-Set `UTOPIA_PROVIDER=anthropic` to force Anthropic, or let Utopia auto-detect from whichever key is available.
-
-<br />
-
 ## CLI Reference
 
 ### Core Commands
@@ -247,6 +286,7 @@ Set `UTOPIA_PROVIDER=anthropic` to force Anthropic, or let Utopia auto-detect fr
 |---------|-------------|
 | `utopia init` | Initialize Utopia in your project |
 | `utopia instrument` | AI adds probes and/or self-healing decorators to your codebase |
+| `utopia audit` | AI analyzes runtime probe data for security vulnerabilities |
 | `utopia reinstrument -p "purpose"` | Add targeted probes for a specific task |
 | `utopia validate` | Check that all probes have valid syntax |
 | `utopia serve -b` | Start the data service in the background |
@@ -256,12 +296,13 @@ Set `UTOPIA_PROVIDER=anthropic` to force Anthropic, or let Utopia auto-detect fr
 
 ### Examples
 
-**Full setup (probes + self-healing):**
+**Full setup (probes + self-healing + audit):**
 ```bash
 utopia init              # Select "Both"
 utopia instrument        # Adds probes, then self-healing decorators
-utopia validate
-utopia serve -b
+utopia serve -b          # Start data service
+# Run your app, browse around, generate probe data
+utopia audit             # AI security analysis on the collected data
 ```
 
 **Self-healing only:**
@@ -272,96 +313,37 @@ export OPENAI_API_KEY="sk-..."
 python app.py            # Errors self-heal at runtime
 ```
 
-**Add probes for a specific task:**
+**Security audit on an existing instrumented project:**
 ```bash
-utopia reinstrument -p "debugging auth failures on the login endpoint"
-utopia reinstrument -p "need to understand billing data flow before refactoring"
-utopia reinstrument -p "investigating slow database queries on the dashboard"
+utopia audit             # Analyzes all probe data for vulnerabilities
+utopia audit --hours 48  # Only analyze last 48 hours of data
 ```
 
 **Clean removal:**
 ```bash
 utopia destruct            # Remove all probes and decorators, restore original files
-utopia destruct --dry-run  # Preview what would be removed
 ```
 
 <br />
 
 ## What the Probes Capture
 
-Utopia probes are not logs. They capture the context an AI agent needs to understand your code at runtime.
+Utopia probes are not logs. They capture the context an AI agent needs to understand your code at runtime -- and the evidence a security audit needs to find real vulnerabilities.
 
-### Debugging Probes
+### Runtime Data
 - **API calls** -- method, URL, status, duration, request/response shapes
 - **Errors** -- type, message, stack trace, *the exact input data that caused it*
 - **Function behavior** -- arguments, return values, which code path was taken and why
-- **Database queries** -- SQL patterns, timing, row counts, table access patterns
+- **Database queries** -- SQL patterns, timing, row counts, parameterization status
 - **Infrastructure** -- cloud provider, region, memory usage, environment config
-
-### Security Probes
-- **SQL injection detection** -- captures whether queries use parameterized inputs
-- **Auth flow analysis** -- token validation decisions, permission checks, role verification
-- **Input validation** -- where user input enters the system, whether it's sanitized
-- **Insecure patterns** -- HTTP calls, exposed error details, missing rate limiting, CORS config
+- **Auth decisions** -- token validation results, permission checks, role verification
 
 ### Data Modes
 
 | Mode | What's captured |
 |------|----------------|
 | **Schemas & shapes** | Counts, types, field names, distributions -- no actual user data (GDPR/CCPA safe) |
-| **Full data context** | Real inputs, outputs, DB results -- maximum visibility for debugging |
-
-<br />
-
-## Real-World Examples
-
-### "Fix the auth redirect bug"
-
-Without Utopia, the agent would need to run the app, reproduce the issue, read logs, and guess at the cause.
-
-With Utopia, the agent queries `get_recent_errors` and immediately sees:
-
-```
-Error: NEXT_REDIRECT
-File: app/login/route.ts:26
-Data: { redirectUri: "https://staging.validia.ai/auth/callback",
-        origin: "http://localhost:3000" }
-```
-
-The agent sees the redirect URI is hardcoded to staging instead of being computed from the request origin. Fix is immediate.
-
-### "My app keeps crashing in production"
-
-With self-healing enabled, it doesn't crash -- it fixes itself:
-
-```
-[utopia] healed: parse_webhook -- KeyError: 'event_type'
-[utopia] fix logged to .utopia/fixes/parse_webhook_20260330_183406.json
-```
-
-The function kept running with the fix. When you open Claude Code:
-
-```
-Agent: *calls get_pending_fixes*
-       -> Found 1 pending fix: parse_webhook accessed 'event_type'
-          but the payload uses 'type'. Fixed with dict.get() fallback.
-       -> Applied fix to app/webhooks.py
-       -> Marked as applied. Done.
-```
-
-### "Why is the dashboard slow?"
-
-The agent queries `get_api_context` and sees:
-
-```
-GET contentful://cdn.contentful.com/getEntries
-  Calls: 14  |  Avg: 1,256ms  |  Slowest: 2,107ms
-
-POST posthog://feature-flag/new-landing-page
-  Calls: 28  |  Avg: 0ms  |  Status: exception_fallback
-```
-
-Contentful is averaging 1.2s per call (too slow), and PostHog is failing silently on every request. The agent knows exactly what to optimize.
+| **Full data context** | Real inputs, outputs, DB results -- maximum visibility for debugging and security |
 
 <br />
 
@@ -373,6 +355,8 @@ When you run `utopia init`, Utopia registers an MCP server with your AI agent. T
 |----------|--------------|
 | `get_pending_fixes` | Self-healing fixes ready to be permanently applied |
 | `mark_fix_applied` | Mark a fix as applied after editing the source |
+| `get_security_findings` | Security vulnerabilities detected from runtime probe data |
+| `update_security_finding` | Mark a security finding as fixed or false positive |
 | `get_recent_errors` | Errors with stack traces and the input data that caused them |
 | `get_production_context` | Context relevant to a specific task or file |
 | `get_full_context` | Complete production overview -- use at the start of any task |
@@ -381,7 +365,7 @@ When you run `utopia init`, Utopia registers an MCP server with your AI agent. T
 | `get_infrastructure_context` | Deployment environment, provider, region, config |
 | `get_impact_analysis` | What is affected by changing a specific file or function |
 
-The agent is instructed (via CLAUDE.md or AGENTS.md) to **always** check `get_pending_fixes` first, then production context before writing code. It's not optional context -- it's how the agent understands your codebase.
+The agent is instructed (via CLAUDE.md or AGENTS.md) to check `get_pending_fixes` and `get_security_findings` first, then production context before writing code.
 
 <br />
 
@@ -393,9 +377,10 @@ The agent is instructed (via CLAUDE.md or AGENTS.md) to **always** check `get_pe
 │  (running)   │     │ (in your code)│     │  (localhost:7890) │
 └──────┬──────┘     └──────────────┘     └────────┬────────┘
        │                                           │
-       │  @utopia / utopia() catches errors        │
-       │  ────> OpenAI or Anthropic fixes them     │
-       │  ────> .utopia/fixes/                     │
+       │  @utopia / utopia() catches errors        │  utopia audit
+       │  ────> OpenAI or Anthropic fixes them     │  ────> AI reads probe data
+       │  ────> .utopia/fixes/                     │  ────> finds security vulns
+       │                                           │  ────> stores findings
        │                                  ┌────────v────────┐
        │                                  │   MCP Server     │
        │                                  │  (utopia mcp)    │
@@ -403,15 +388,16 @@ The agent is instructed (via CLAUDE.md or AGENTS.md) to **always** check `get_pe
        │                                           │
        │                                  ┌────────v────────┐
        └─────────────────────────────────>│  AI Agent        │
-              fixes flow back             │  (Claude/Codex)  │
-                                          └─────────────────┘
+         fixes + security findings        │  (Claude/Codex)  │
+              flow back                   └─────────────────┘
 ```
 
 - **Probes** are lightweight, non-blocking, and never throw. They use a background queue with circuit breaker.
-- **Self-healing** captures the function source, sends to OpenAI or Anthropic for debugging, compiles the fix, and re-runs with original args. One attempt only -- no infinite loops. `RecursionError`, `SystemExit`, `KeyboardInterrupt`, and `MemoryError` always pass through.
-- **Probe-enriched healing** -- when both features are active, the healer queries the local data service for production context before generating a fix. The AI sees not just the error, but how the function normally behaves.
+- **Self-healing** captures the function source, sends to OpenAI or Anthropic for debugging, compiles the fix, and re-runs with original args. One attempt only -- no infinite loops.
+- **Probe-enriched healing** -- when both features are active, the healer queries the local data service for production context before generating a fix.
+- **Security audit** -- the AI agent reads actual runtime probe data (API calls, DB queries, auth flows, data shapes) and finds vulnerabilities that static analysis can't see.
 - **Data Service** is a local Express + SQLite server. No cloud, no accounts, no data leaves your machine.
-- **MCP Server** serves both probe data and self-healing fixes to your AI agent.
+- **MCP Server** serves probe data, self-healing fixes, and security findings to your AI agent.
 
 <br />
 
@@ -427,32 +413,23 @@ Make sure your npm global bin is in your PATH. Check with `npm bin -g`.
 The AI agent is working -- it reads files, plans the changes, then writes them. This takes 2-5 minutes per phase depending on codebase size. For Claude Code, you'll see streaming progress. For Codex, you'll see a spinner with elapsed time.
 
 ### `Module not found: utopia-runtime` (JavaScript/TypeScript)
-The runtime didn't install. Run `utopia instrument` again -- it installs the runtime from npm (`utopia-runtime` package) automatically.
+Run `utopia instrument` again -- it installs the runtime from npm automatically.
 
 ### `ModuleNotFoundError: No module named 'utopia_runtime'` (Python)
-The runtime didn't install into your environment. Run `utopia instrument` again -- it installs from PyPI (`utopia-runtime` package) automatically. If using a virtualenv, make sure it's activated.
+Run `utopia instrument` again -- it installs from PyPI automatically. If using a virtualenv, make sure it's activated.
 
-### Pydantic `Extra inputs are not permitted` error (Python)
-Old Utopia env vars in your `.env` file are conflicting with Pydantic Settings. Utopia no longer writes env vars for Python projects (it reads from `.utopia/config.json` instead). Remove any `UTOPIA_ENDPOINT` or `UTOPIA_PROJECT_ID` lines from your `.env`.
+### `utopia audit` says "Could not fetch probe data"
+Your app needs to be running with probes active so there's data to analyze. Run your app, use it for a bit, then run `utopia audit`.
 
 ### `utopia serve -b` says port 7890 is in use
 ```bash
-utopia serve --stop          # Try stopping the existing server
-lsof -ti:7890 | xargs kill  # Force kill whatever is on that port
-utopia serve -b              # Start fresh
+utopia serve --stop
+lsof -ti:7890 | xargs kill
+utopia serve -b
 ```
 
 ### MCP tools not available in Claude Code / Codex
-Re-run `utopia init` to re-register the MCP server. Then restart your AI agent session. The MCP server must be registered with the agent before it can use the tools.
-
-### `utopia destruct` shows "user changes preserved"
-This means you made code changes to files that also have probes or decorators. Utopia stripped the Utopia-specific code but kept your changes. This is expected and safe.
-
-### Probes not sending data (0 probes in server)
-1. Is the server running? Check: `curl http://localhost:7890/api/v1/health`
-2. For JS/TS: Are the env vars set? Check `.env.local` has `UTOPIA_ENDPOINT` and `UTOPIA_PROJECT_ID`
-3. For Python: Does `.utopia/config.json` exist in the project root?
-4. Did you restart your app after instrumenting?
+Re-run `utopia init` to re-register the MCP server. Then restart your AI agent session.
 
 <br />
 
@@ -470,7 +447,7 @@ This means you made code changes to files that also have probes or decorators. U
 
 - All data stays on your machine. The data service runs locally on `localhost:7890`.
 - No cloud accounts, no telemetry, no data transmission to external services.
-- Self-healing sends function code + errors to OpenAI or Anthropic for fix generation. No other data leaves your machine.
+- Self-healing and security audit send function code + errors to OpenAI or Anthropic. No other data leaves your machine.
 - Probes can be configured to capture schemas only (no PII) or full data context.
 - Passwords, tokens, API keys, and secrets are never captured regardless of mode.
 - `utopia destruct` cleanly removes all probes, decorators, and fix logs.
@@ -482,6 +459,6 @@ This means you made code changes to files that also have probes or decorators. U
 
 **Built by [Paul Vann](https://github.com/vaulpann)**
 
-*code that talks back -- and fixes itself*
+*code that talks back, fixes itself, and watches its own back*
 
 </div>

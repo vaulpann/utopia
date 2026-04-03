@@ -41,5 +41,24 @@ export function initSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(source);
     CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(target);
+
+    CREATE TABLE IF NOT EXISTS security_findings (
+      id TEXT PRIMARY KEY,
+      rule_id TEXT NOT NULL,
+      severity TEXT NOT NULL CHECK(severity IN ('critical','high','medium','low','info')),
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      evidence TEXT NOT NULL DEFAULT '{}',
+      file TEXT,
+      function_name TEXT,
+      probe_ids TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','acknowledged','fixed','false_positive')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_findings_severity ON security_findings(severity);
+    CREATE INDEX IF NOT EXISTS idx_findings_status ON security_findings(status);
+    CREATE INDEX IF NOT EXISTS idx_findings_rule ON security_findings(rule_id);
   `);
 }
